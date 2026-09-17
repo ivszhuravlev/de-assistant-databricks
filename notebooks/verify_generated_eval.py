@@ -20,9 +20,10 @@ sys.path.insert(0, str(repo_root_hint / "DE-assistant-framework"))
 from workspace_paths import default_repo_root
 
 repo_root = Path(default_repo_root(dbutils))
+sys.path.insert(0, str(repo_root))
 sys.path.insert(0, str(repo_root / "DE-assistant-framework"))
 from pipeline_helpers import load_paths
-from verify_score import (
+from evals.taxi.score import (
     EXPECTED_COUNTS,
     TABLES,
     collect_failures,

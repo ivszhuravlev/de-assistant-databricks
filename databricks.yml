@@ -19,6 +19,7 @@ sync:
     - docs/pipeline-eval.md
     - docs/pipeline-eval-transactions.md
     - docs/pipeline-eval-retail.md
+    - evals
     - generated
   exclude:
     - .git

@@ -135,5 +135,5 @@ the next retry.
 
 ## Evaluation
 
-The hand-built taxi benchmark, expected counts, table grains, and rerun checks are documented in
-[`docs/pipeline-eval.md`](../docs/pipeline-eval.md). Raw is ADLS; generated tables go to `gen_*` schemas.
+Eval scores are not in this kernel. Taxi expected counts live in `evals/taxi/score.py`.
+Procedure: [`docs/pipeline-eval.md`](pipeline-eval.md). Generated tables go to `gen_*` schemas.

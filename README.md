@@ -7,11 +7,12 @@ Workspace identity, cluster IDs, and storage SAS tokens are runtime parameters. 
 ## Layout
 
 ```
-DE-assistant-framework/   generator kernel
-notebooks/                operator jobs (eval, generate, verify)
-spec/                     per-run pipeline contract and helper signatures
+DE-assistant-framework/   generator kernel only
+notebooks/                operator jobs (eval, generate, verify, init)
+evals/                    per-eval scorers (taxi, later retail / transactions)
+spec/                     per-run pipeline contract
 config/                   example generator config
-docs/pipeline-eval.md     taxi eval benchmark
+docs/                     operator guides and eval procedures
 ```
 
 ## Configure

@@ -34,10 +34,9 @@ py-modules = [
   "semantic",
   "tools",
   "validation",
-  "verify_score",
   "workspace_paths",
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["DE-assistant-framework"]
+pythonpath = ["DE-assistant-framework", "."]
 testpaths = ["tests"]

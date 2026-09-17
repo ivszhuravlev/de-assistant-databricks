@@ -1,4 +1,4 @@
-"""Operator-only generated-vs-eval score. Not used by the generator."""
+"""Taxi generated-vs-eval score. Operator-only; the generator must not import this."""
 
 from __future__ import annotations
 

@@ -14,7 +14,12 @@ from semantic import semantic_search
 
 _TESTED_FILE = "tested-pipelines.json"
 _HIDDEN_PIPELINE_IDS = {"eval_taxi"}
-_HIDDEN_PIPELINE_FILES = {"taxi_vertical_slice.py"}
+_HIDDEN_PIPELINE_FILES = {
+    "taxi_vertical_slice.py",
+    "fresh_retail_vertical_slice.py",
+    "transaction_cat_vertical_slice.py",
+    "evals/taxi/score.py",
+}
 _LAYERS = ("bronze", "silver", "gold")
 _TABLE_LAYERS = (*_LAYERS, "de_assist")
 
