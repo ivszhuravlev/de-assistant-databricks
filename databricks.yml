@@ -38,7 +38,7 @@ resources:
         - task_key: build_taxi_slice
           existing_cluster_id: ${var.existing_cluster_id}
           notebook_task:
-            notebook_path: notebooks/taxi_vertical_slice.py
+            notebook_path: evals/taxi/slice.py
             base_parameters:
               backend: adls
               repo_root: ${workspace.file_path}
@@ -134,7 +134,7 @@ resources:
         - task_key: build_transaction_slice
           existing_cluster_id: ${var.existing_cluster_id}
           notebook_task:
-            notebook_path: notebooks/transaction_cat_vertical_slice.py
+            notebook_path: evals/transaction_cat/slice.py
             base_parameters:
               backend: adls
               repo_root: ${workspace.file_path}
@@ -145,7 +145,7 @@ resources:
         - task_key: build_retail_slice
           existing_cluster_id: ${var.existing_cluster_id}
           notebook_task:
-            notebook_path: notebooks/fresh_retail_vertical_slice.py
+            notebook_path: evals/fresh_retail/slice.py
             base_parameters:
               backend: adls
               repo_root: ${workspace.file_path}

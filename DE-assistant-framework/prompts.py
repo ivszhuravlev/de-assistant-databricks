@@ -101,9 +101,17 @@ TASKS = {
         "write the silver tables the spec names."
     ),
     "gold": (
-        "Generate only the gold layer. Inspect prior-layer tables and the contract, write "
-        "the gold tables the spec names, then append exactly one PIPELINE_RUN SUCCESS row "
-        "using the shared pipeline_run_id from config_json."
+        "Generate only the gold layer. Inspect prior-layer tables and the contract, then "
+        "write the gold tables the spec names. The notebook is invalid unless transform() "
+        "contains this exact call once after all gold writes and checks pass:\n"
+        "append_metadata_rows(spark, paths, PIPELINE_RUN, [\n"
+        "    pipeline_run_row(\n"
+        "        pipeline_run_id=config['pipeline_run_id'],\n"
+        "        pipeline_name=config.get('project_name', ''),\n"
+        "        status='SUCCESS',\n"
+        "    )\n"
+        "])\n"
+        "Do not omit it. Do not write it twice. Do not use a string table name."
     ),
 }
 

@@ -153,9 +153,19 @@ def _pipeline_run_append_count(tree: ast.AST) -> int:
         table_args.extend(
             keyword.value for keyword in node.keywords if keyword.arg == "table_name"
         )
-        if any(isinstance(value, ast.Name) and value.id == "PIPELINE_RUN" for value in table_args):
+        if any(_is_pipeline_run_table(value) for value in table_args):
             count += 1
     return count
+
+
+def _is_pipeline_run_table(value: ast.AST) -> bool:
+    if isinstance(value, ast.Name):
+        return value.id == "PIPELINE_RUN"
+    if isinstance(value, ast.Attribute):
+        return value.attr == "PIPELINE_RUN"
+    if isinstance(value, ast.Constant) and value.value == "pipeline_run":
+        return True
+    return False
 
 
 def validate_layer(result: dict[str, Any], expected_layer: str) -> list[str]:

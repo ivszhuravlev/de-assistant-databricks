@@ -18,7 +18,13 @@ _HIDDEN_PIPELINE_FILES = {
     "taxi_vertical_slice.py",
     "fresh_retail_vertical_slice.py",
     "transaction_cat_vertical_slice.py",
+    "slice.py",
     "evals/taxi/score.py",
+    "evals/taxi/slice.py",
+    "evals/fresh_retail/score.py",
+    "evals/fresh_retail/slice.py",
+    "evals/transaction_cat/score.py",
+    "evals/transaction_cat/slice.py",
 }
 _LAYERS = ("bronze", "silver", "gold")
 _TABLE_LAYERS = (*_LAYERS, "de_assist")

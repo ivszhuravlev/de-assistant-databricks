@@ -1,4 +1,4 @@
-"""Taxi generated-vs-eval score. Operator-only; the generator must not import this."""
+"""Transaction-cat generated-vs-eval score. Operator-only; the generator must not import this."""
 
 from __future__ import annotations
 
@@ -12,27 +12,27 @@ from evals.common import (
     tables_from_counts,
 )
 
-PIPELINE = "taxi"
+PIPELINE = "transaction_cat"
 
 EXPECTED_COUNTS = {
-    "bronze.yellow_tripdata": 1369765,
-    "bronze.green_tripdata": 76518,
-    "bronze.taxi_zone_lookup": 265,
-    "silver.trips": 1297232,
-    "silver.rejected_trips": 134399,
-    "gold.dim_zones": 265,
-    "gold.fct_trips": 1297232,
-    "gold.fct_monthly_zone_revenue": 495,
+    "bronze.transactions": 1_000_000,
+    "bronze.category_taxonomy": 10,
+    "bronze.country_currency": 5,
 }
 
-TABLES = tables_from_counts(EXPECTED_COUNTS)
+TABLES = tables_from_counts(EXPECTED_COUNTS) + (
+    ("silver", "transactions"),
+    ("silver", "rejected_transactions"),
+    ("gold", "dim_category"),
+    ("gold", "dim_geo"),
+    ("gold", "fct_transactions"),
+    ("gold", "fct_category_country"),
+)
 
 _EXTRA = (
-    "silver_duplicate_groups",
     "invalid_dead_letter_rows",
     "missing_reject_reasons",
-    "monthly_duplicate_groups",
-    "monthly_mismatches",
+    "category_country_mismatches",
 )
 
 

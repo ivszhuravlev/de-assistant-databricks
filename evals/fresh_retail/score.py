@@ -1,4 +1,4 @@
-"""Taxi generated-vs-eval score. Operator-only; the generator must not import this."""
+"""Fresh retail generated-vs-eval score. Operator-only; the generator must not import this."""
 
 from __future__ import annotations
 
@@ -12,27 +12,30 @@ from evals.common import (
     tables_from_counts,
 )
 
-PIPELINE = "taxi"
+PIPELINE = "fresh_retail"
 
 EXPECTED_COUNTS = {
-    "bronze.yellow_tripdata": 1369765,
-    "bronze.green_tripdata": 76518,
-    "bronze.taxi_zone_lookup": 265,
-    "silver.trips": 1297232,
-    "silver.rejected_trips": 134399,
-    "gold.dim_zones": 265,
-    "gold.fct_trips": 1297232,
-    "gold.fct_monthly_zone_revenue": 495,
+    "bronze.daily_sales_train": 4_500_000,
+    "bronze.daily_sales_eval": 350_000,
 }
 
-TABLES = tables_from_counts(EXPECTED_COUNTS)
+TABLES = tables_from_counts(EXPECTED_COUNTS) + (
+    ("silver", "daily_sales"),
+    ("silver", "rejected_sales"),
+    ("silver", "dim_store"),
+    ("silver", "dim_product"),
+    ("gold", "dim_store"),
+    ("gold", "dim_product"),
+    ("gold", "fct_daily_sales"),
+    ("gold", "fct_store_daily"),
+    ("gold", "fct_category_daily"),
+)
 
 _EXTRA = (
-    "silver_duplicate_groups",
     "invalid_dead_letter_rows",
     "missing_reject_reasons",
-    "monthly_duplicate_groups",
-    "monthly_mismatches",
+    "store_daily_mismatches",
+    "category_daily_mismatches",
 )
 
 

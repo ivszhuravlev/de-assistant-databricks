@@ -119,6 +119,21 @@ def test_gold_pipeline_run_write_is_accepted():
     assert validate_layer(result, "gold") == []
 
 
+def test_gold_pipeline_run_string_table_is_accepted():
+    result = valid_result()
+    result["layer"] = "gold"
+    result["artifacts"][0]["path"] = "notebooks/gold.py"
+    result["artifacts"][0]["content"] = (
+        "# Databricks notebook source\n"
+        "def transform(spark, config: dict) -> None:\n"
+        "    append_metadata_rows(spark, paths, 'pipeline_run', [\n"
+        "        pipeline_run_row(pipeline_run_id=config['pipeline_run_id'], "
+        "pipeline_name=config['project_name'], status='SUCCESS')\n"
+        "    ])\n"
+    )
+    assert validate_layer(result, "gold") == []
+
+
 def test_read_only_tools_only_read_declared_source(tmp_path: Path):
     (tmp_path / "spec").mkdir()
     (tmp_path / "contracts").mkdir()

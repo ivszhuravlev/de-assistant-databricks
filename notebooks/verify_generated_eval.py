@@ -129,8 +129,10 @@ monthly_mismatches = safe_sql_count(
     FROM facts f
     FULL JOIN {monthly} m
       USING (pickup_zone, revenue_month, service_type)
-    WHERE NOT (f.total_amount <=> m.revenue_monthly_total_amount)
+    WHERE f.trip_count IS NULL
+       OR m.total_monthly_trips IS NULL
        OR NOT (f.trip_count <=> m.total_monthly_trips)
+       OR abs(coalesce(f.total_amount, 0) - coalesce(m.revenue_monthly_total_amount, 0)) > 0.01
     """,
     default=-1,
 )

@@ -8,11 +8,11 @@ Workspace identity, cluster IDs, and storage SAS tokens are runtime parameters. 
 
 ```
 DE-assistant-framework/   generator kernel only
-notebooks/                operator jobs (eval, generate, verify, init)
-evals/                    per-eval scorers (taxi, later retail / transactions)
-spec/                     per-run pipeline contract
+evals/                    three operator evals (taxi, fresh_retail, transaction_cat)
+notebooks/                generate / verify / init / raw land
+spec/                     generic helper API + default taxi spec for generate
 config/                   example generator config
-docs/                     operator guides and eval procedures
+docs/                     generator guide; eval procedures live under evals/
 ```
 
 ## Configure
@@ -38,4 +38,4 @@ databricks bundle run run_generator -t dev
 databricks bundle run verify_generated -t dev
 ```
 
-Eval procedure: [`docs/pipeline-eval.md`](docs/pipeline-eval.md).
+Eval procedures: [`evals/README.md`](evals/README.md).

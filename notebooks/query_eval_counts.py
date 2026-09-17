@@ -18,9 +18,13 @@ sys.path.insert(0, str(repo_root_hint / "DE-assistant-framework"))
 from workspace_paths import default_repo_root
 
 repo_root = Path(default_repo_root(dbutils))
+sys.path.insert(0, str(repo_root))
 sys.path.insert(0, str(repo_root / "DE-assistant-framework"))
 
 from pipeline_helpers import load_paths
+from evals.fresh_retail.score import TABLES as RETAIL_TABLES
+from evals.taxi.score import TABLES as TAXI_TABLES
+from evals.transaction_cat.score import TABLES as TX_TABLES
 
 pipeline = dbutils.widgets.get("pipeline").strip()
 paths = load_paths(
@@ -29,30 +33,9 @@ paths = load_paths(
     pipeline=pipeline,
 )
 TABLES = {
-    "transaction_cat": [
-        ("bronze", "transactions"),
-        ("bronze", "category_taxonomy"),
-        ("bronze", "country_currency"),
-        ("silver", "rejected_transactions"),
-        ("silver", "transactions"),
-        ("gold", "dim_category"),
-        ("gold", "dim_geo"),
-        ("gold", "fct_transactions"),
-        ("gold", "fct_category_country"),
-    ],
-    "fresh_retail": [
-        ("bronze", "daily_sales_train"),
-        ("bronze", "daily_sales_eval"),
-        ("silver", "rejected_sales"),
-        ("silver", "daily_sales"),
-        ("silver", "dim_store"),
-        ("silver", "dim_product"),
-        ("gold", "dim_store"),
-        ("gold", "dim_product"),
-        ("gold", "fct_daily_sales"),
-        ("gold", "fct_store_daily"),
-        ("gold", "fct_category_daily"),
-    ],
+    "taxi": TAXI_TABLES,
+    "transaction_cat": TX_TABLES,
+    "fresh_retail": RETAIL_TABLES,
 }
 if pipeline not in TABLES:
     raise ValueError(f"Unsupported pipeline {pipeline!r}; expected {sorted(TABLES)}")

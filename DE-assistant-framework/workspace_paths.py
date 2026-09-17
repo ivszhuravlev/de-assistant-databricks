@@ -54,7 +54,14 @@ def _repo_candidate(value: str) -> Path | None:
     for path in (candidate, *candidate.parents):
         if (path / "DE-assistant-framework").is_dir():
             return path
-    if candidate.name in {"notebooks", "DE-assistant-framework"}:
+    if candidate.name in {
+        "notebooks",
+        "DE-assistant-framework",
+        "evals",
+        "taxi",
+        "fresh_retail",
+        "transaction_cat",
+    }:
         return candidate.parent
     return candidate
 
