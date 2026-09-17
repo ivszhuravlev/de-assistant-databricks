@@ -1,0 +1,10 @@
+{
+  "pipelines": [
+    {
+      "id": "tool_smoke_sample",
+      "layer": "none",
+      "path": "spec/tool-smoke-sample.py",
+      "status": "sample"
+    }
+  ]
+}

@@ -1,0 +1,168 @@
+bundle:
+  name: de-assist-databricks
+
+variables:
+  existing_cluster_id:
+    description: Existing cluster ID supplied by the operator
+    default: ""
+
+workspace:
+  root_path: /Users/${workspace.current_user.userName}/de-assist-databricks
+
+sync:
+  include:
+    - DE-assistant-framework
+    - notebooks
+    - spec
+    - config
+    - contracts
+    - docs/pipeline-eval.md
+    - docs/pipeline-eval-transactions.md
+    - docs/pipeline-eval-retail.md
+    - generated
+  exclude:
+    - .git
+    - .venv
+    - .pycache
+    - .tmp
+    - .pytest_cache
+    - .databricks
+    - tests
+
+resources:
+  jobs:
+    taxi_vertical_slice:
+      name: "[${bundle.target}] NYC Taxi January 2021 Vertical Slice"
+      tasks:
+        - task_key: build_taxi_slice
+          existing_cluster_id: ${var.existing_cluster_id}
+          notebook_task:
+            notebook_path: notebooks/taxi_vertical_slice.py
+            base_parameters:
+              backend: adls
+              repo_root: ${workspace.file_path}
+
+    load_adls_raw:
+      name: "[${bundle.target}] One-time ADLS raw land"
+      tasks:
+        - task_key: copy_raw_to_adls
+          existing_cluster_id: ${var.existing_cluster_id}
+          notebook_task:
+            notebook_path: notebooks/load_adls_raw.py
+            base_parameters:
+              repo_root: ${workspace.file_path}
+
+    tool_smoke:
+      name: "[${bundle.target}] Read-Only Tool Smoke"
+      tasks:
+        - task_key: smoke_all_tools
+          existing_cluster_id: ${var.existing_cluster_id}
+          notebook_task:
+            notebook_path: notebooks/tool_smoke.py
+            base_parameters:
+              repo_root: ${workspace.file_path}
+
+    run_generator:
+      name: "[${bundle.target}] Haiku layer generator"
+      tasks:
+        - task_key: generate_and_execute
+          existing_cluster_id: ${var.existing_cluster_id}
+          notebook_task:
+            notebook_path: notebooks/run_generator.py
+            base_parameters:
+              config_path: config/cluster-e2e.json.example
+              repo_root: ${workspace.file_path}
+              workspace_root: ${workspace.root_path}
+              cluster_id: ${var.existing_cluster_id}
+
+    query_taxi_counts:
+      name: "[${bundle.target}] Query taxi Hive counts"
+      tasks:
+        - task_key: query_counts
+          existing_cluster_id: ${var.existing_cluster_id}
+          notebook_task:
+            notebook_path: notebooks/query_taxi_counts.py
+            base_parameters:
+              backend: adls
+              output_space: eval
+              repo_root: ${workspace.file_path}
+
+    reset_generated:
+      name: "[${bundle.target}] Reset generated Hive/Delta only"
+      tasks:
+        - task_key: reset_gen
+          existing_cluster_id: ${var.existing_cluster_id}
+          notebook_task:
+            notebook_path: notebooks/reset_generated_eval.py
+            base_parameters:
+              repo_root: ${workspace.file_path}
+
+    verify_generated:
+      name: "[${bundle.target}] Verify generated vs eval counts"
+      tasks:
+        - task_key: verify_counts
+          existing_cluster_id: ${var.existing_cluster_id}
+          notebook_task:
+            notebook_path: notebooks/verify_generated_eval.py
+            base_parameters:
+              repo_root: ${workspace.file_path}
+
+    inspect_eval_raw:
+      name: "[${bundle.target}] Inspect ADLS eval raw prefixes"
+      tasks:
+        - task_key: inspect_raw
+          existing_cluster_id: ${var.existing_cluster_id}
+          notebook_task:
+            notebook_path: notebooks/inspect_eval_raw.py
+            base_parameters:
+              repo_root: ${workspace.file_path}
+
+    load_eval_raw:
+      name: "[${bundle.target}] One-time land transaction and retail raw"
+      tasks:
+        - task_key: land_eval_raw
+          existing_cluster_id: ${var.existing_cluster_id}
+          notebook_task:
+            notebook_path: notebooks/load_eval_raw.py
+            base_parameters:
+              repo_root: ${workspace.file_path}
+
+    transaction_cat_vertical_slice:
+      name: "[${bundle.target}] Transaction categorization eval"
+      tasks:
+        - task_key: build_transaction_slice
+          existing_cluster_id: ${var.existing_cluster_id}
+          notebook_task:
+            notebook_path: notebooks/transaction_cat_vertical_slice.py
+            base_parameters:
+              backend: adls
+              repo_root: ${workspace.file_path}
+
+    fresh_retail_vertical_slice:
+      name: "[${bundle.target}] Fresh retail eval"
+      tasks:
+        - task_key: build_retail_slice
+          existing_cluster_id: ${var.existing_cluster_id}
+          notebook_task:
+            notebook_path: notebooks/fresh_retail_vertical_slice.py
+            base_parameters:
+              backend: adls
+              repo_root: ${workspace.file_path}
+
+    query_eval_counts:
+      name: "[${bundle.target}] Query transaction or retail Hive counts"
+      tasks:
+        - task_key: query_counts
+          existing_cluster_id: ${var.existing_cluster_id}
+          notebook_task:
+            notebook_path: notebooks/query_eval_counts.py
+            base_parameters:
+              backend: adls
+              output_space: eval
+              pipeline: transaction_cat
+              repo_root: ${workspace.file_path}
+
+targets:
+  dev:
+    default: true
+    mode: development

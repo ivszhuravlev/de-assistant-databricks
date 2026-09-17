@@ -1,0 +1,86 @@
+Helper signatures. Call them exactly like this. Do not invent extra arguments.
+Pipeline-specific paths, grains, columns, and counts live in pipeline_spec, not here.
+
+actual_column(df.columns, name) -> str
+    Returns the real column name. Use it inside F.col(...). Never F.to_date(actual_column(...))
+    without F.col. Correct: F.to_date(F.col(actual_column(df.columns, name)))
+
+missing_columns(df.columns, required_names) -> list[str]
+
+validate_counts(table_name, row_count, missing, duplicate_groups=None, allow_empty=False) -> list[str]
+    Non-empty list means fail.
+    duplicate_groups is an int (or None): how many groups have count(*) > 1.
+    Never pass a grain column list. That always fails.
+    Correct:
+        dups = df.groupBy(*grain).count().where(F.col("count") > 1).count()
+        validate_counts(fqtn, row_count, missing, dups)
+
+write_delta(df, spark, paths, layer, table, mode="overwrite", partition_by=None) -> str
+    Returns the Delta LOCATION path string. Never int(write_delta(...)).
+    Count rows with spark.table(paths.table(layer, table)).count() after the write.
+
+ensure_schema(spark, paths) -> None
+    Creates the layer schemas for this output_space, plus de_assist.
+    Do not pass a DataFrame.
+
+load_paths(backend, output_space=config["output_space"]) -> RuntimePaths
+    backend is "adls" or "dbfs".
+    output_space is "eval" or "generated" from config_json. The generator is given "generated".
+    paths.raw(*parts) uses the parts the spec declares.
+    paths.table(layer, table) resolves Hive for this output_space.
+    spark.table(paths.table(layer, table))
+    Do not hard-code schema names.
+    Do not use spark.read.format("delta").table.
+
+data_quality_row(pipeline_run_id=..., layer=..., table_name=..., check_name=..., passed=True/False, actual="", detail="") -> dict
+
+layer_run_row(pipeline_run_id=..., layer=..., table_name=..., row_count=..., status="SUCCESS"|"FAILED") -> dict
+
+pipeline_run_row(pipeline_run_id=..., pipeline_name=..., status="SUCCESS"|"FAILED", started_at=None, ended_at=None) -> dict
+
+append_metadata_rows(spark, paths, table_name, rows) -> str
+    table_name is DATA_QUALITY or LAYER_RUN or PIPELINE_RUN.
+    Rows must match that table. DATA_QUALITY gets data_quality_row dicts only.
+    LAYER_RUN gets layer_run_row dicts only. PIPELINE_RUN gets pipeline_run_row dicts only.
+    Mixing them fails. Observer Delta is shared; helpers pick the location.
+    Correct: append_metadata_rows(spark, paths, DATA_QUALITY, [row, ...])
+    Gold owns the single successful pipeline-run record. After all gold writes and checks pass,
+    call exactly once with the shared pipeline_run_id from config_json:
+        append_metadata_rows(spark, paths, PIPELINE_RUN, [
+            pipeline_run_row(
+                pipeline_run_id=pipeline_run_id,
+                pipeline_name=config.get("project_name", ""),
+                status="SUCCESS",
+            )
+        ])
+    Bronze and silver do not append the SUCCESS pipeline_run row.
+
+error_record(pipeline=..., error=..., error_type=..., layer=..., table=..., pipeline_run_id=..., diagnostics=None) -> dict
+
+persist_error(spark, paths, record) -> str
+    Correct: persist_error(spark, paths, error_record(...))
+
+Window:
+    from pyspark.sql import Window
+    Window.partitionBy(*columns).orderBy(...)
+    There is no F.Window.
+
+Widgets — create them before get:
+    dbutils.widgets.text("config_json", "{}")
+    dbutils.widgets.text("backend", "dbfs")
+    dbutils.widgets.text("repo_root", "")
+    repo_root comes only from the non-empty widget or config_json; never use a user-path default.
+    config = json.loads(dbutils.widgets.get("config_json"))
+    transform(spark, config)
+Never call transform(spark, {}). The config_json object carries the shared pipeline_run_id.
+
+Order at the top of the notebook:
+    1. widgets
+    2. sys.path.insert(0, repo_root + "/DE-assistant-framework")
+    3. import pipeline_helpers, metadata, retrieval. Never import helpers.
+    4. def transform
+    5. transform(spark, config)
+
+Count a table before using that count in a later expression.
+Do not wrap the call in if __name__ == "__main__".
+No Python UDF for hashes; use Spark functions from the spec.

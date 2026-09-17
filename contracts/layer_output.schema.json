@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GeneratedLayer",
+  "type": "object",
+  "required": ["layer", "summary", "artifacts", "assumptions"],
+  "additionalProperties": false,
+  "properties": {
+    "layer": {"enum": ["bronze", "silver", "gold"]},
+    "summary": {"type": "string", "minLength": 1},
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "kind", "content"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {"type": "string", "pattern": "^notebooks/[a-z0-9_/-]+\\.py$"},
+          "kind": {"const": "databricks_notebook"},
+          "content": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}

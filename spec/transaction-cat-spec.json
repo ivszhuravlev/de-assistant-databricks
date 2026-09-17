@@ -1,0 +1,93 @@
+{
+  "pipeline_name": "transaction_categorization",
+  "eval_only": true,
+  "hidden_from_generator": true,
+  "target": {
+    "catalog": "hive_metastore",
+    "schemas": ["tx_bronze", "tx_silver", "tx_gold", "de_assist"],
+    "generated_schemas": ["gen_tx_bronze", "gen_tx_silver", "gen_tx_gold", "de_assist"],
+    "table_style": "external_delta",
+    "storage_root": "dbfs:/de-assist-databricks/delta/tx",
+    "backend": "adls",
+    "pipeline": "transaction_cat"
+  },
+  "raw": {
+    "root": "abfss://raw@exampleaccount.dfs.core.windows.net/transaction_cat",
+    "files": {
+      "transactions": "abfss://raw@exampleaccount.dfs.core.windows.net/transaction_cat/transaction_cat.parquet",
+      "category_taxonomy": "abfss://raw@exampleaccount.dfs.core.windows.net/transaction_cat/category_taxonomy.jsonl",
+      "country_currency": "abfss://raw@exampleaccount.dfs.core.windows.net/transaction_cat/country_currency.jsonl"
+    }
+  },
+  "identity": ["transaction_description", "category", "country", "currency"],
+  "layers": {
+    "bronze": [
+      {
+        "schema": "tx_bronze",
+        "name": "transactions",
+        "source": "transactions",
+        "required_columns": ["transaction_description", "category", "country", "currency", "_source_file", "_ingested_at", "_source_row_hash"]
+      },
+      {
+        "schema": "tx_bronze",
+        "name": "category_taxonomy",
+        "source": "category_taxonomy",
+        "expected_count": 10,
+        "unique_grain": ["category_code"],
+        "required_columns": ["category", "category_code", "aliases"]
+      },
+      {
+        "schema": "tx_bronze",
+        "name": "country_currency",
+        "source": "country_currency",
+        "expected_count": 5,
+        "unique_grain": ["country_norm"],
+        "required_columns": ["country", "country_norm", "currency"]
+      }
+    ],
+    "silver": [
+      {
+        "schema": "tx_silver",
+        "name": "rejected_transactions",
+        "rule": "blank description, category not in taxonomy aliases, or country/currency pair not in lookup",
+        "reject_reason": "null_or_blank_description | unknown_category | invalid_country_currency"
+      },
+      {
+        "schema": "tx_silver",
+        "name": "transactions",
+        "dedupe": "keep first by _source_row_hash, _source_file",
+        "unique_grain": ["transaction_id"],
+        "join": "left join exploded aliases and country_currency"
+      }
+    ],
+    "gold": [
+      {
+        "schema": "tx_gold",
+        "name": "dim_category",
+        "from": ["tx_bronze.category_taxonomy"],
+        "unique_grain": ["category_code"]
+      },
+      {
+        "schema": "tx_gold",
+        "name": "dim_geo",
+        "from": ["tx_bronze.country_currency"],
+        "unique_grain": ["country_norm"]
+      },
+      {
+        "schema": "tx_gold",
+        "name": "fct_transactions",
+        "from": ["tx_silver.transactions", "tx_gold.dim_category", "tx_gold.dim_geo"],
+        "join": "left join, must not drop rows",
+        "unique_grain": ["transaction_id"]
+      },
+      {
+        "schema": "tx_gold",
+        "name": "fct_category_country",
+        "from": ["tx_gold.fct_transactions"],
+        "grain": ["category_code", "country_norm", "currency_norm"],
+        "measures": ["count transaction_id as txn_count", "countDistinct transaction_description", "countDistinct merchant_token"],
+        "reconcile_to": "tx_gold.fct_transactions"
+      }
+    ]
+  }
+}

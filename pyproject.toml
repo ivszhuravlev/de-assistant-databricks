@@ -1,0 +1,43 @@
+[project]
+name = "de-assist-databricks"
+version = "0.1.0"
+description = "Generic, contract-driven Databricks data engineering generator"
+requires-python = ">=3.9"
+dependencies = [
+  "databricks-sdk>=0.60.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+de-generate = "orchestrator:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "DE-assistant-framework"}
+py-modules = [
+  "config",
+  "executor",
+  "job_assembler",
+  "llm_agent",
+  "llm_model",
+  "metadata",
+  "orchestrator",
+  "pipeline_helpers",
+  "placeholders",
+  "prompts",
+  "retrieval",
+  "semantic",
+  "tools",
+  "validation",
+  "verify_score",
+  "workspace_paths",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["DE-assistant-framework"]
+testpaths = ["tests"]

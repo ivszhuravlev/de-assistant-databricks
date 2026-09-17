@@ -1,0 +1,34 @@
+{
+  "project_name": "nyc_taxi_january_2021",
+  "model_endpoint": "databricks-claude-haiku-4-5",
+  "layers": ["bronze", "silver", "gold"],
+  "input_root": "spec",
+  "contract_file": "contracts/layer_output.schema.json",
+  "output_root": "generated",
+  "workspace_root": "",
+  "metadata_path": "dbfs:/de-assist-databricks/metadata/generator_runs",
+  "error_log_path": "dbfs:/de-assist-databricks/delta/de_assist/run_errors",
+  "execute_generated": false,
+  "raw_backend": "adls",
+  "output_space": "generated",
+  "temp_existing_cluster_id": "",
+  "max_tool_rounds": 8,
+  "max_attempts": 3,
+  "source_map": [
+    {
+      "id": "pipeline_spec",
+      "path": "pipeline-spec.json",
+      "description": "NYC taxi pipeline contract"
+    },
+    {
+      "id": "helpers_api",
+      "path": "helpers-api.txt",
+      "description": "Exact helper function signatures"
+    },
+    {
+      "id": "tested_pipelines",
+      "path": "tested-pipelines.json",
+      "description": "Tested pipeline notebooks the model may read"
+    }
+  ]
+}

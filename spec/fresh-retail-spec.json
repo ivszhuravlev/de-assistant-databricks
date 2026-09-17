@@ -1,0 +1,104 @@
+{
+  "pipeline_name": "fresh_retail_net",
+  "eval_only": true,
+  "hidden_from_generator": true,
+  "target": {
+    "catalog": "hive_metastore",
+    "schemas": ["retail_bronze", "retail_silver", "retail_gold", "de_assist"],
+    "generated_schemas": ["gen_retail_bronze", "gen_retail_silver", "gen_retail_gold", "de_assist"],
+    "table_style": "external_delta",
+    "storage_root": "dbfs:/de-assist-databricks/delta/retail",
+    "backend": "adls",
+    "pipeline": "fresh_retail"
+  },
+  "raw": {
+    "root": "abfss://raw@exampleaccount.dfs.core.windows.net/fresh_reatail_net",
+    "note": "Owner folder spelling is fresh_reatail_net.",
+    "files": {
+      "train": "abfss://raw@exampleaccount.dfs.core.windows.net/fresh_reatail_net/train.parquet",
+      "eval": "abfss://raw@exampleaccount.dfs.core.windows.net/fresh_reatail_net/eval.parquet"
+    }
+  },
+  "identity": ["store_id", "product_id", "sale_date"],
+  "layers": {
+    "bronze": [
+      {
+        "schema": "retail_bronze",
+        "name": "daily_sales_train",
+        "source": "train",
+        "split": "train",
+        "partition_by": ["sale_date"],
+        "required_columns": ["store_id", "product_id", "dt", "sale_amount", "_split", "sale_date"]
+      },
+      {
+        "schema": "retail_bronze",
+        "name": "daily_sales_eval",
+        "source": "eval",
+        "split": "eval",
+        "partition_by": ["sale_date"],
+        "required_columns": ["store_id", "product_id", "dt", "sale_amount", "_split", "sale_date"]
+      }
+    ],
+    "silver": [
+      {
+        "schema": "retail_silver",
+        "name": "rejected_sales",
+        "rule": "null store_id, product_id, sale_date, or null/negative sale_amount"
+      },
+      {
+        "schema": "retail_silver",
+        "name": "daily_sales",
+        "from": ["retail_bronze.daily_sales_train", "retail_bronze.daily_sales_eval"],
+        "union": "unionByName with _split",
+        "unique_grain": ["store_id", "product_id", "sale_date", "_split"]
+      },
+      {
+        "schema": "retail_silver",
+        "name": "dim_store",
+        "from": ["retail_silver.daily_sales"],
+        "grain": ["store_id"]
+      },
+      {
+        "schema": "retail_silver",
+        "name": "dim_product",
+        "from": ["retail_silver.daily_sales"],
+        "grain": ["product_id"]
+      }
+    ],
+    "gold": [
+      {
+        "schema": "retail_gold",
+        "name": "dim_store",
+        "from": ["retail_silver.dim_store"],
+        "unique_grain": ["store_id"]
+      },
+      {
+        "schema": "retail_gold",
+        "name": "dim_product",
+        "from": ["retail_silver.dim_product"],
+        "unique_grain": ["product_id"]
+      },
+      {
+        "schema": "retail_gold",
+        "name": "fct_daily_sales",
+        "from": ["retail_silver.daily_sales", "retail_gold.dim_store", "retail_gold.dim_product"],
+        "join": "left join store and product, must not drop rows",
+        "unique_grain": ["sales_id"]
+      },
+      {
+        "schema": "retail_gold",
+        "name": "fct_store_daily",
+        "from": ["retail_gold.fct_daily_sales"],
+        "grain": ["store_id", "sale_date", "_split"],
+        "reconcile_to": "sum sale_amount on fct_daily_sales"
+      },
+      {
+        "schema": "retail_gold",
+        "name": "fct_category_daily",
+        "from": ["retail_gold.fct_daily_sales"],
+        "grain": ["first_category_id", "sale_date", "_split"],
+        "reconcile_to": "sum sale_amount on fct_daily_sales"
+      }
+    ]
+  }
+}
