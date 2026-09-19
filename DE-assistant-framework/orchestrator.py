@@ -126,13 +126,25 @@ def run_generator(
                 "assumptions": generated["assumptions"],
             }
             if spark is not None:
-                row = {
-                    key: json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else value
-                    for key, value in outcome.items()
-                }
-                spark.createDataFrame([row]).write.format("delta").mode("append").save(
-                    config.metadata_path
-                )
+                try:
+                    row = {
+                        key: json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else value
+                        for key, value in outcome.items()
+                    }
+                    spark.createDataFrame([row]).write.format("delta").mode("append").save(
+                        config.metadata_path
+                    )
+                except Exception as exc:
+                    print(
+                        json.dumps(
+                            {
+                                "event": "metadata_write_failed",
+                                "error_type": type(exc).__name__,
+                                "error": str(exc),
+                                "metadata_path": config.metadata_path,
+                            }
+                        )
+                    )
             _record_attempt(
                 spark,
                 runtime_paths,

@@ -204,6 +204,35 @@ def test_generator_retries_with_same_conversation(tmp_path, monkeypatch):
     )
 
 
+def test_metadata_write_failure_does_not_abort_layer(tmp_path, monkeypatch):
+    cfg = config()
+    cfg.layers = ["bronze"]
+
+    class Tools:
+        @staticmethod
+        def definitions():
+            return []
+
+    class Client:
+        workspace = object()
+
+        def complete(self, messages, _tools):
+            return {"role": "assistant", "content": json.dumps(valid_result())}
+
+    class Spark:
+        def createDataFrame(self, rows):
+            raise RuntimeError("observer down")
+
+    monkeypatch.setattr(orchestrator, "DatabricksChatClient", lambda _endpoint: Client())
+    monkeypatch.setattr(
+        orchestrator, "make_tools", lambda *_args: (Tools(), load_paths(storage_root="dbfs:/test"))
+    )
+
+    outcomes = orchestrator.run_generator(cfg, tmp_path, spark=Spark())
+    assert outcomes[0]["layer"] == "bronze"
+    assert outcomes[0]["execution"]["status"] == "SKIPPED"
+
+
 def test_job_assembler_builds_executor_payload():
     payload = assemble_job_payload(
         "test",
