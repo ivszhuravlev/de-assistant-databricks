@@ -1,10 +1,25 @@
 {
   "pipelines": [
     {
-      "id": "tool_smoke_sample",
-      "layer": "none",
-      "path": "spec/tool-smoke-sample.py",
-      "status": "sample"
+      "id": "nyc_taxi_january_2021_bronze",
+      "layer": "bronze",
+      "path": "generated/taxi/notebooks/bronze.py",
+      "status": "tested",
+      "project_name": "nyc_taxi_january_2021"
+    },
+    {
+      "id": "nyc_taxi_january_2021_silver",
+      "layer": "silver",
+      "path": "generated/taxi/notebooks/silver.py",
+      "status": "tested",
+      "project_name": "nyc_taxi_january_2021"
+    },
+    {
+      "id": "nyc_taxi_january_2021_gold",
+      "layer": "gold",
+      "path": "generated/taxi/notebooks/gold.py",
+      "status": "tested",
+      "project_name": "nyc_taxi_january_2021"
     }
   ]
 }

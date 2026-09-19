@@ -53,16 +53,6 @@ resources:
             base_parameters:
               repo_root: ${workspace.file_path}
 
-    tool_smoke:
-      name: "[${bundle.target}] Read-Only Tool Smoke"
-      tasks:
-        - task_key: smoke_all_tools
-          existing_cluster_id: ${var.existing_cluster_id}
-          notebook_task:
-            notebook_path: notebooks/tool_smoke.py
-            base_parameters:
-              repo_root: ${workspace.file_path}
-
     run_generator:
       name: "[${bundle.target}] Haiku layer generator"
       tasks:
@@ -75,6 +65,7 @@ resources:
               repo_root: ${workspace.file_path}
               workspace_root: ${workspace.root_path}
               cluster_id: ${var.existing_cluster_id}
+              promote_to_whitelist: "false"
 
     query_taxi_counts:
       name: "[${bundle.target}] Query taxi Hive counts"

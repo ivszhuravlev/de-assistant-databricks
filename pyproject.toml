@@ -31,7 +31,6 @@ py-modules = [
   "placeholders",
   "prompts",
   "retrieval",
-  "semantic",
   "tools",
   "validation",
   "workspace_paths",

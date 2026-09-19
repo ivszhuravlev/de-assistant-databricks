@@ -204,6 +204,34 @@ def test_generator_retries_with_same_conversation(tmp_path, monkeypatch):
     )
 
 
+def test_generator_flag_off_does_not_write_whitelist(tmp_path, monkeypatch):
+    cfg = config()
+    cfg.layers = ["bronze"]
+    (tmp_path / "spec").mkdir()
+    catalog = tmp_path / "spec" / "tested-pipelines.json"
+    catalog.write_text('{"pipelines": []}\n', encoding="utf-8")
+
+    class Tools:
+        @staticmethod
+        def definitions():
+            return []
+
+    class Client:
+        workspace = object()
+
+        def complete(self, messages, _tools):
+            return {"role": "assistant", "content": json.dumps(valid_result())}
+
+    monkeypatch.setattr(orchestrator, "DatabricksChatClient", lambda _endpoint: Client())
+    monkeypatch.setattr(
+        orchestrator, "make_tools", lambda *_args: (Tools(), load_paths(storage_root="dbfs:/test"))
+    )
+
+    orchestrator.run_generator(cfg, tmp_path)
+
+    assert catalog.read_text(encoding="utf-8") == '{"pipelines": []}\n'
+
+
 def test_metadata_write_failure_does_not_abort_layer(tmp_path, monkeypatch):
     cfg = config()
     cfg.layers = ["bronze"]
@@ -261,9 +289,9 @@ def test_context_tools_are_registered():
         "read_tested_pipeline",
         "spark_ui_applications",
         "spark_ui_failed_jobs",
-        "semantic_search",
         "search_previous_errors",
     } <= names
+    assert "semantic_search" not in names
     assert "ask_clarification" in names
     tools = ReadOnlyTools(config(), Path("."))
     asked = json.loads(tools.call("ask_clarification", {"question": "What is the grain?"}))
@@ -277,7 +305,6 @@ def test_data_tools_require_spark():
     ]
     assert json.loads(tools.call("spark_ui_applications", {}))["error"]
     assert json.loads(tools.call("spark_ui_failed_jobs", {}))["error"]
-    assert json.loads(tools.call("semantic_search", {"query": "zones"}))["status"] == "parked"
 
 
 def test_peek_raw_out_of_root_returns_json():
@@ -298,16 +325,16 @@ def test_tool_schemas_declare_required_args():
     assert defs["read_log"]["required"] == ["run_id", "layer"]
 
 
-def test_eval_pipeline_is_hidden_from_generator_tools():
+def test_smoke_is_gone_and_eval_pipeline_is_hidden_from_generator_tools():
     root = Path(__file__).resolve().parents[1]
     tools = ReadOnlyTools(config(), root)
     missing = json.loads(tools.call("read_tested_pipeline", {"pipeline_id": "eval_taxi"}))
     assert missing.get("error")
     ids = {item.get("id") for item in missing.get("available") or []}
     assert "eval_taxi" not in ids
-    sample = json.loads(tools.call("read_tested_pipeline", {"pipeline_id": "tool_smoke_sample"}))
-    assert sample["id"] == "tool_smoke_sample"
-    assert "taxi_vertical_slice" not in sample.get("content", "")
+    assert "tool_smoke_sample" not in ids
+    assert not (root / "spec" / "tool-smoke-sample.py").exists()
+    assert not (root / "notebooks" / "tool_smoke.py").exists()
 
 
 def test_get_last_error_uses_pipeline_and_layer():
@@ -330,6 +357,80 @@ def test_get_last_error_uses_pipeline_and_layer():
     tools = ReadOnlyTools(config(), Path("."), error_records=records)
     payload = json.loads(tools.call("get_last_error", {"layer": "silver"}))
     assert payload["last_error"]["error"] == "newer"
+
+
+def test_get_last_error_falls_back_to_other_pipeline():
+    records = [
+        {
+            "pipeline": "nyc_taxi_january_2021",
+            "layer": "bronze",
+            "status": "FAILED",
+            "error": "taxi fail",
+            "created_at": "2026-01-02T00:00:00Z",
+        }
+    ]
+    tools = ReadOnlyTools(config(), Path("."), error_records=records)
+    payload = json.loads(tools.call("get_last_error", {"layer": "bronze"}))
+    assert payload["last_error"]["error"] == "taxi fail"
+
+
+def test_search_previous_errors_lists_recent_when_query_empty():
+    records = [
+        {
+            "pipeline": "nyc_taxi_january_2021",
+            "layer": "silver",
+            "status": "FAILED",
+            "error": "join exploded",
+            "created_at": "2026-01-02T00:00:00Z",
+        }
+    ]
+    tools = ReadOnlyTools(config(), Path("."), error_records=records)
+    payload = json.loads(tools.call("search_previous_errors", {"query": ""}))
+    assert payload[0]["error"] == "join exploded"
+
+
+def test_successful_runs_order_created_at_before_limit():
+    from tools import _load_successful_runs
+
+    class Row:
+        def asDict(self, recursive=True):
+            return {"status": "SUCCESS"}
+
+    class Frame:
+        columns = ["status", "created_at"]
+
+        def __init__(self):
+            self.ordered = False
+
+        def where(self, expression):
+            assert expression == "status = 'SUCCESS'"
+            return self
+
+        def orderBy(self, column, ascending):
+            assert column == "created_at"
+            assert ascending is False
+            self.ordered = True
+            return self
+
+        def limit(self, value):
+            assert self.ordered
+            assert value == 3
+            return self
+
+        def collect(self):
+            return [Row()]
+
+    class Spark:
+        def table(self, _name):
+            return Frame()
+
+    result = _load_successful_runs(
+        Spark(),
+        load_paths(storage_root="dbfs:/test"),
+        limit=3,
+    )
+    assert result["pipeline_run"] == [{"status": "SUCCESS"}]
+    assert result["layer_run"] == [{"status": "SUCCESS"}]
 
 
 def test_read_tested_pipeline_returns_requested_slice(tmp_path: Path):
@@ -371,6 +472,78 @@ def test_read_tested_pipeline_returns_requested_slice(tmp_path: Path):
     hidden = json.loads(tools.call("read_tested_pipeline", {"pipeline_id": "eval_taxi"}))
     assert hidden.get("error")
     assert "SECRET_EVAL" not in json.dumps(hidden)
+
+
+def test_promote_to_whitelist_writes_tested_layer_and_filters_hidden(tmp_path: Path):
+    cfg = config()
+    cfg.project_name = "taxi"
+    cfg.output_root = "generated/taxi"
+    (tmp_path / "spec").mkdir()
+    catalog = {
+        "pipelines": [
+            {"id": "other_bronze", "layer": "bronze", "path": "generated/other.py", "status": "tested"},
+            {"id": "tool_smoke_sample", "layer": "none", "path": "spec/tool-smoke-sample.py"},
+            {"id": "eval_taxi", "layer": "all", "path": "notebooks/taxi_vertical_slice.py"},
+            {"id": "hidden", "layer": "gold", "path": "generated/hidden.py", "hidden_from_generator": True},
+            {"id": "score", "layer": "gold", "path": "evals/taxi/score.py", "status": "tested"},
+        ]
+    }
+    path = tmp_path / "spec" / "tested-pipelines.json"
+    path.write_text(json.dumps(catalog), encoding="utf-8")
+
+    orchestrator.promote_to_whitelist(cfg, tmp_path, "bronze")
+
+    text = path.read_text(encoding="utf-8")
+    payload = json.loads(text)
+    assert text.endswith("\n")
+    assert payload["pipelines"] == [
+        catalog["pipelines"][0],
+        {
+            "id": "taxi_bronze",
+            "layer": "bronze",
+            "path": "generated/taxi/notebooks/bronze.py",
+            "status": "tested",
+            "project_name": "taxi",
+        },
+    ]
+
+
+def test_prior_evidence_gate_empty_catalog_does_not_require_tools():
+    orchestrator._require_prior_evidence([], [])
+
+
+def test_prior_evidence_gate_requires_listed_tool_for_nonempty_catalog():
+    catalog = [{"id": "taxi_bronze", "layer": "bronze"}]
+    with pytest.raises(ValueError, match="Prior-evidence tools were required"):
+        orchestrator._require_prior_evidence(
+            [{"role": "assistant", "tool_calls": [{"function": {"name": "peek_raw", "arguments": "{}"}}]}],
+            catalog,
+        )
+    with pytest.raises(ValueError, match="list_successful_runs"):
+        orchestrator._require_prior_evidence(
+            [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"function": {"name": "read_tested_pipeline", "arguments": "{}"}}
+                    ],
+                }
+            ],
+            catalog,
+        )
+    orchestrator._require_prior_evidence(
+        [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"function": {"name": "read_tested_pipeline", "arguments": "{}"}},
+                    {"function": {"name": "list_successful_runs", "arguments": "{}"}},
+                    {"function": {"name": "read_log", "arguments": "{}"}},
+                ],
+            }
+        ],
+        catalog,
+    )
 
 
 def test_adls_account_env_is_required(monkeypatch):
@@ -641,6 +814,7 @@ def test_config_json_includes_output_space():
     cfg = GeneratorConfig.load(root / "config" / "cluster-e2e.json.example")
     assert cfg.output_space == "generated"
     assert cfg.raw_backend == "adls"
+    assert cfg.promote_to_whitelist is False
 
 
 def test_config_environment_overrides_local_identity(tmp_path: Path, monkeypatch):
@@ -747,6 +921,50 @@ def test_read_log_uses_attempt_dir_and_drops_generated_code():
         def __init__(self, files):
             self.files = files
             self.read = self
+            self._jvm = self.Jvm(files)
+            self._jsc = self
+
+        class Jvm:
+            def __init__(self, files):
+                class Status:
+                    def __init__(self, path):
+                        self.path = path
+
+                    def getPath(self):
+                        return self
+
+                    def toString(self):
+                        return self.path
+
+                class FileSystem:
+                    def globStatus(self, path):
+                        prefix, suffix = str(path).split("*", 1)
+                        return [
+                            Status(item)
+                            for item in files
+                            if item.startswith(prefix) and item.endswith(suffix)
+                        ]
+
+                class HadoopPath:
+                    def __init__(self, value):
+                        self.value = value
+
+                    def __str__(self):
+                        return self.value
+
+                    def getFileSystem(self, _configuration):
+                        return FileSystem()
+
+                class Fs:
+                    Path = HadoopPath
+
+                class Apache:
+                    hadoop = type("Hadoop", (), {"fs": Fs})
+
+                class Org:
+                    apache = Apache
+
+                self.org = Org()
 
         def text(self, path):
             if path not in self.files:
@@ -757,14 +975,19 @@ def test_read_log_uses_attempt_dir_and_drops_generated_code():
         def collect(self):
             return [{"value": row} for row in self._rows]
 
+        def hadoopConfiguration(self):
+            return object()
+
     from pipeline_helpers import load_paths
 
-    attempt = "dbfs:/de-assist-databricks/logs/generator/run-9/bronze"
+    older_attempt = "dbfs:/de-assist-databricks/logs/generator/run-9/bronze/attempt-1.json"
+    attempt = "dbfs:/de-assist-databricks/logs/generator/run-9/bronze/attempt-2.json"
     tools = ReadOnlyTools(
         config(),
         Path("."),
         spark=Spark(
             {
+                older_attempt: [json.dumps({"status": "FAILED", "error": "older"})],
                 attempt: [
                     json.dumps(
                         {
@@ -871,3 +1094,118 @@ def test_canceled_execute_is_not_retried(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="CANCELED"):
         orchestrator.run_generator(cfg, tmp_path)
     assert len(calls) == 1
+
+
+def test_build_request_body_marks_stable_prefix_for_cache():
+    from llm_model import build_request_body
+
+    messages = [
+        {"role": "system", "content": "stable instructions"},
+        {"role": "user", "content": "changing request"},
+    ]
+    tools = [
+        {"type": "function", "function": {"name": "first"}},
+        {"type": "function", "function": {"name": "last"}},
+    ]
+
+    body = build_request_body(messages, tools)
+
+    assert body["messages"][0]["content"] == [
+        {
+            "type": "text",
+            "text": "stable instructions",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    assert body["messages"][1]["content"] == "changing request"
+    assert body["tools"][0].get("cache_control") is None
+    assert body["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert body["tool_choice"] == "auto"
+    assert messages[0]["content"] == "stable instructions"
+    assert "cache_control" not in tools[-1]
+
+
+def test_usage_from_response_reads_tokens_and_cache():
+    from llm_model import usage_from_response
+
+    usage = usage_from_response(
+        {
+            "usage": {
+                "prompt_tokens": 76608,
+                "completion_tokens": 447,
+                "prompt_tokens_details": {"cached_tokens": 12},
+                "cache_creation_input_tokens": 7582,
+            }
+        }
+    )
+    assert usage == {
+        "prompt": 76608,
+        "completion": 447,
+        "cache_read": 12,
+        "cache_write": 7582,
+    }
+    assert usage_from_response(
+        {"cache_read_input_tokens": 21, "cache_creation_input_tokens": 34}
+    ) == {
+        "prompt": 0,
+        "completion": 0,
+        "cache_read": 21,
+        "cache_write": 34,
+    }
+    assert usage_from_response({}) == {
+        "prompt": 0,
+        "completion": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+    }
+
+
+def test_tool_loop_logs_turn_usage(capsys):
+    from llm_agent import run_tool_loop
+
+    class Tools:
+        @staticmethod
+        def definitions():
+            return []
+
+        @staticmethod
+        def call(name, arguments):
+            return json.dumps({"ok": name, **arguments})
+
+    class Client:
+        endpoint = "databricks-claude-haiku-4-5"
+        last_usage = {"prompt": 10, "completion": 4, "cache_read": 0, "cache_write": 7}
+
+        def complete(self, messages, _tools):
+            if any(message.get("role") == "tool" for message in messages):
+                return {"role": "assistant", "content": json.dumps(valid_result())}
+            return {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "function": {"name": "list_sources", "arguments": "{}"},
+                    }
+                ],
+            }
+
+    generated, _messages = run_tool_loop(Client(), Tools(), "sys", "bronze", 4, attempt=1)
+    assert generated["layer"] == "bronze"
+    text = capsys.readouterr().out
+    assert "layer bronze generation first" in text
+    assert "layer bronze attempt 1 agent loop started, endpoint=databricks-claude-haiku-4-5" in text
+    assert "turn 1" in text and "prompt=10" in text and "tool_calls=1" in text
+    assert "tools=list_sources" in text
+    assert "cache_write=7" in text
+    assert "layer bronze attempt 1 tool list_sources" in text
+
+
+def test_milestone_events_leave_a_blank_line(capsys):
+    from llm_agent import emit_event
+
+    emit_event("layer_failed", layer="bronze", attempt=1)
+    emit_event("layer_attempt", layer="bronze", attempt=2)
+    text = capsys.readouterr().out
+    assert "layer_failed" in text
+    assert "\n\n" in text
+    assert text.index("layer_failed") < text.index("\n\n") < text.index("layer_attempt")

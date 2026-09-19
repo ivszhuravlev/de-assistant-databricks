@@ -11,7 +11,6 @@ from config import GeneratorConfig
 from pipeline_helpers import load_paths
 from retrieval import get_last_error as load_last_error
 from retrieval import keyword_search, load_error_records
-from semantic import semantic_search
 
 _TESTED_FILE = "tested-pipelines.json"
 _HIDDEN_PIPELINE_IDS = {"eval_taxi"}
@@ -192,11 +191,6 @@ class ReadOnlyTools:
                 "only; do not use it for optimization.",
                 {},
             ),
-            tool(
-                "semantic_search",
-                "Parked. Do not use. Keyword search_previous_errors instead.",
-                {"query": {"type": "string"}},
-            ),
         ]
 
     def call(self, name: str, arguments: dict[str, Any]) -> str:
@@ -251,7 +245,6 @@ class ReadOnlyTools:
             ),
             "spark_ui_applications": self._spark_ui_applications,
             "spark_ui_failed_jobs": self._spark_ui_failed_jobs,
-            "semantic_search": lambda: json.dumps(semantic_search(arguments.get("query"))),
         }
         if name not in handlers:
             raise ValueError(f"Unknown or non-read-only tool: {name}")
@@ -579,19 +572,10 @@ class ReadOnlyTools:
             if self.spark is not None:
                 latest = load_last_error(self.spark, self.paths, pipeline, layer)
             else:
+                from retrieval import _latest_failed
+
                 records = self.error_loader() if self.error_loader else self.error_records
-                matches = [
-                    record
-                    for record in records
-                    if str(record.get("pipeline") or "") == pipeline
-                    and str(record.get("layer") or "") == layer
-                    and str(record.get("status") or "FAILED").upper() == "FAILED"
-                ]
-                latest = max(
-                    matches,
-                    key=lambda record: str(record.get("created_at") or ""),
-                    default=None,
-                )
+                latest = _latest_failed(list(records or []), pipeline, layer)
         except Exception as exc:
             return json.dumps({"error": str(exc), "pipeline": pipeline, "layer": layer})
         return json.dumps(
@@ -608,7 +592,14 @@ class ReadOnlyTools:
                 for record in records
                 if str(record.get("status") or "FAILED").upper() == "FAILED"
             ]
-            matches = keyword_search(failed, query, limit)
+            if (query or "").strip():
+                matches = keyword_search(failed, query, limit)
+            else:
+                matches = sorted(
+                    failed,
+                    key=lambda record: str(record.get("created_at") or ""),
+                    reverse=True,
+                )[: max(1, min(limit, 10))]
         except Exception as exc:
             return json.dumps({"error": str(exc), "query": query})
         return json.dumps(matches, sort_keys=True, default=str)
@@ -620,10 +611,12 @@ class ReadOnlyTools:
         if not _safe_segment(run_id) or not _safe_segment(layer):
             return json.dumps({"error": "run_id and layer must be safe non-empty path segments"})
         cap = max(1, min(tail_lines, 20))
-        candidates = [
-            self.paths.log(f"generator/{run_id}/{layer}.json"),
-            self.paths.log(f"generator/{run_id}/{layer}"),
-        ]
+        candidates = [self.paths.log(f"generator/{run_id}/{layer}.json")]
+        attempt_pattern = self.paths.log(f"generator/{run_id}/{layer}/attempt-*.json")
+        candidates.extend(_latest_attempt_logs(self.spark, attempt_pattern))
+        candidates.append(self.paths.log(f"generator/{run_id}/{layer}"))
+        if attempt_pattern not in candidates:
+            candidates.append(attempt_pattern)
         last_error = None
         for path in candidates:
             try:
@@ -724,13 +717,18 @@ def _tested_catalog(path: Path) -> list[dict[str, Any]]:
 def _visible_tested_catalog(path: Path) -> list[dict[str, Any]]:
     visible = []
     for item in _tested_catalog(path):
-        if item.get("id") in _HIDDEN_PIPELINE_IDS or item.get("hidden_from_generator"):
-            continue
-        name = PurePosixPath(str(item.get("path") or "")).name
-        if name in _HIDDEN_PIPELINE_FILES:
+        if _hidden_pipeline_entry(item):
             continue
         visible.append(item)
     return visible
+
+
+def _hidden_pipeline_entry(item: dict[str, Any]) -> bool:
+    if item.get("id") in _HIDDEN_PIPELINE_IDS or item.get("hidden_from_generator"):
+        return True
+    path = PurePosixPath(str(item.get("path") or ""))
+    hidden_names = {PurePosixPath(value).name for value in _HIDDEN_PIPELINE_FILES}
+    return str(path) in _HIDDEN_PIPELINE_FILES or path.name in hidden_names
 
 
 def _jsonable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -770,14 +768,37 @@ def _load_successful_runs(spark, paths, limit: int = 10) -> dict[str, list[dict[
     result = {"pipeline_run": [], "layer_run": []}
     for name in result:
         fqtn = f"{paths.ops_schema}.{name}"
+        frame = spark.table(fqtn).where("status = 'SUCCESS'")
+        if "created_at" in frame.columns:
+            frame = frame.orderBy("created_at", ascending=False)
         result[name] = [
             row.asDict(recursive=True)
-            for row in spark.table(fqtn)
-            .where("status = 'SUCCESS'")
-            .limit(limit)
-            .collect()
+            for row in frame.limit(limit).collect()
         ]
     return result
+
+
+def _latest_attempt_logs(spark: Any, pattern: str) -> list[str]:
+    """Return matching attempt logs newest-attempt first when Hadoop listing is available."""
+    try:
+        jvm = spark._jvm
+        path = jvm.org.apache.hadoop.fs.Path(pattern)
+        filesystem = path.getFileSystem(spark._jsc.hadoopConfiguration())
+        statuses = filesystem.globStatus(path) or []
+        paths = [str(status.getPath().toString()) for status in statuses]
+        return sorted(paths, key=_attempt_number, reverse=True)
+    except Exception:
+        return []
+
+
+def _attempt_number(path: str) -> int:
+    name = PurePosixPath(path).name
+    if name.startswith("attempt-") and name.endswith(".json"):
+        try:
+            return int(name[len("attempt-") : -len(".json")])
+        except ValueError:
+            pass
+    return -1
 
 
 def _read_json_url(url: str, headers: dict[str, str] | None = None) -> Any:

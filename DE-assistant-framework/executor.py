@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 from job_assembler import assemble_job_payload
+
+_ERROR_CODE = re.compile(r"\[([A-Z][A-Z0-9_]+)\]")
+_SQLSTATE = re.compile(r"SQLSTATE:\s*[A-Z0-9]+")
+_DUMP_MARKERS = (
+    "== DataFrame ==",
+    "== Physical Plan ==",
+    "Traceback (most recent call last)",
+    "-----",
+)
+_NOISE = (
+    "task failed",
+    "workload failed",
+    "see run output for details",
+    "temporary job ended",
+)
 
 TERMINAL_STATES = {"TERMINATED", "SKIPPED", "INTERNAL_ERROR"}
 
@@ -34,12 +50,38 @@ def _failed_run_detail(workspace: Any, parent_run: Any) -> str:
             continue
         task_key = getattr(task, "task_key", None) or str(task_run_id)
         error = getattr(output, "error", None)
-        error_trace = getattr(output, "error_trace", None)
         if error:
-            parts.append(f"{task_key}: {error}")
-        if error_trace:
-            parts.append(str(error_trace))
-    return "\n".join(parts).strip()
+            parts.append(f"{task_key}: {slim_error(error)}")
+    return slim_error("\n".join(parts))
+
+
+def slim_error(text: str) -> str:
+    """Keep the Spark/SQL error code. Drop DataFrame dumps and traces."""
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    cut = raw
+    for marker in _DUMP_MARKERS:
+        idx = cut.find(marker)
+        if idx > 0:
+            cut = cut[:idx]
+    lines = [candidate.strip() for candidate in cut.splitlines() if candidate.strip()]
+    useful = [
+        line
+        for line in lines
+        if _ERROR_CODE.search(line) or not any(noise in line.lower() for noise in _NOISE)
+    ]
+    if not useful:
+        useful = lines
+    match = _ERROR_CODE.search(cut)
+    if match:
+        line = next((item for item in useful if f"[{match.group(1)}]" in item), useful[0])
+    else:
+        line = useful[0]
+    sqlstate = _SQLSTATE.search(cut)
+    if sqlstate and sqlstate.group(0) not in line:
+        line = f"{line} {sqlstate.group(0)}"
+    return " ".join(line.split())[:400]
 
 
 def execute_with_temp_job(

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from config import GeneratorConfig
-from executor import _failed_run_detail
+from executor import _failed_run_detail, slim_error
 from pipeline_helpers import (
     actual_column,
     load_paths,
@@ -327,4 +327,21 @@ def test_executor_extracts_task_error_and_trace():
     )
     detail = _failed_run_detail(workspace, parent)
     assert "NameError: missing_name" in detail
-    assert "stack trace detail" in detail
+    assert "task failed" not in detail
+    assert "stack trace detail" not in detail
+
+
+def test_slim_error_keeps_code_drops_dataframe_dump():
+    raw = (
+        "generated_00_gold failed with message: Workload failed, see run output for details.\n"
+        "generated_00_gold: [AMBIGUOUS_REFERENCE] Reference `category` is ambiguous, "
+        "could be: `spark_catalog`.`gen_tx_bronze`.`category_taxonomy`.`category`, "
+        "`spark_catalog`.`gen_tx_silver`.`transactions`.`category`. SQLSTATE: 42704\n"
+        "== DataFrame ==\n"
+        "col1 was failed from line 147\n"
+    )
+    text = slim_error(raw)
+    assert "[AMBIGUOUS_REFERENCE]" in text
+    assert "SQLSTATE: 42704" in text
+    assert "== DataFrame ==" not in text
+    assert "col1 was failed" not in text

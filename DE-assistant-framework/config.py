@@ -29,6 +29,7 @@ class GeneratorConfig:
     raw_backend: str = "adls"
     output_space: str = "generated"
     pipeline: str = "taxi"
+    promote_to_whitelist: bool = False
 
     @classmethod
     def load(cls, path: str | Path) -> "GeneratorConfig":

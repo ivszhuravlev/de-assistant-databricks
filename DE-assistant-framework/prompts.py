@@ -17,7 +17,7 @@ If a business fact is not in the brief and cannot be observed with tools, call a
 
 ## Tools
 
-Call list_sources, then read_source for pipeline_brief, helpers_api, and tested_pipelines, then read_contract. Inspect real data with list_raw_files, peek_raw, profile_column, get_distinct_values, list_tables, and peek_table before choosing columns or file names. After bronze exists, silver/gold must list_tables and peek_table on prior layers. If a previous run failed, use get_last_error, read_log, or search_previous_errors. list_successful_runs is metadata only. read_tested_pipeline returns only listed prior generated layers, never the operator eval notebook. Do not call semantic_search. Copy helper signatures from helpers_api. Do not invent helper arguments.
+Call list_sources, then read_source for pipeline_brief, helpers_api, and tested_pipelines. Immediately after reading tested_pipelines, call list_successful_runs, then call read_contract. If that visible catalog lists prior generated notebooks, call read_tested_pipeline for every listed id/layer, or at minimum once for every layer present. Then call get_last_error for this layer (it may return another pipeline) and read_log using a run_id from list_successful_runs. If those are empty, call search_previous_errors. Use prior notebooks only as platform and helper patterns: never copy their domain tables, grains, or file names into this pipeline. Eval notebooks remain forbidden. Inspect real data with list_raw_files, peek_raw, profile_column, get_distinct_values, list_tables, and peek_table before choosing columns or file names. After bronze exists, silver/gold must list_tables and peek_table on prior layers. read_tested_pipeline returns only listed prior generated layers, never the operator eval notebook. Copy helper signatures from helpers_api. Do not invent helper arguments.
 
 ## Output
 
@@ -85,7 +85,7 @@ Read pipeline_brief. Implement this layer so that idea holds. Discover files, co
 
 1. Bronze reads already-landed files from paths.raw. Add lineage columns the brief requires. Do not download or re-ingest.
 2. Silver types, filters, splits, and dedupes from the brief and from bronze you inspect. Dead-letter reasons come from the brief.
-3. Gold builds the dimensions, facts, and marts the brief names. Joins must not drop rows unless the brief says they should. After a join, never F.col("shared_name") if both sides have that column; use left["name"] or right["name"] and alias, or drop one side first. A Spark AMBIGUOUS_REFERENCE error means that notebook is wrong.
+3. Gold builds the dimensions, facts, and marts the brief names. Joins must not drop rows unless the brief says they should. After a join, never F.col("shared_name") if both sides have that column; use left["name"] or right["name"] and alias, or drop one side first. A Spark AMBIGUOUS_REFERENCE error means that notebook is wrong. Do not call F.col("category") after joining taxonomy or lookup tables.
 4. Persist only after checks pass: use stage_delta, validate the staging table, then call publish_staged. Do not call write_delta for a published table; stage_delta/publish_staged already write Delta. A failed check must leave the published table unchanged. Immediately after EACH successful publish_staged, append_metadata_rows for THAT table: one data_quality_row with passed=True and one layer_run_row. Use the short table name (trips, not paths.table(...)). Bronze, silver, and gold must do this on SUCCESS, not only on failure, and must not skip a published table.
    validate_counts 4th argument is an int duplicate-group count, never a column list.
    write_delta returns a path string; never int() it. Do not call it in the notebook.
@@ -155,10 +155,13 @@ TOOLS_DESCRIPTION = """
 Use the read-only tools before generating code: list_sources, read_source, and read_contract for
 declared context (the user brief is pipeline_brief); list_raw_files, peek_raw, profile_column,
 list_tables, and peek_table for real data; and get_distinct_values, get_last_error, read_log,
-search_previous_errors, and list_successful_runs for prior evidence. ask_clarification records a
-business question you cannot observe. read_tested_pipeline is only for listed generated notebooks,
-not the operator eval. Only after a failed execute, you may call spark_ui_applications and then
-spark_ui_failed_jobs for debugging. semantic_search is parked and must not be called.
+search_previous_errors, and list_successful_runs for prior evidence. After reading tested_pipelines,
+call list_successful_runs; when the tested catalog is non-empty, call read_tested_pipeline for each listed
+id/layer, then get_last_error for this layer and read_log with a listed run_id. Treat those notebooks
+only as platform/helper patterns, never as domain facts, tables, grains, or file names. ask_clarification records a business question
+you cannot observe. read_tested_pipeline is only for listed generated notebooks, not the operator
+eval. Only after a failed execute, you may call spark_ui_applications and then
+spark_ui_failed_jobs for debugging.
 """
 
 

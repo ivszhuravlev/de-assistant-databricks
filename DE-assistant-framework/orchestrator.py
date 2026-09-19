@@ -10,14 +10,26 @@ from pathlib import Path
 from typing import Any
 
 from config import LAYERS, GeneratorConfig
-from executor import execute_with_temp_job
-from llm_agent import run_tool_loop, tool_ledger
+from executor import execute_with_temp_job, slim_error
+from llm_agent import _info, emit_event, run_tool_loop, tool_ledger
 from llm_model import DatabricksChatClient
 from pipeline_helpers import write_run_log
 from prompts import build_task_prompt
 from retrieval import error_record, find_past_fix, persist_error
-from tools import make_tools
+from tools import (
+    _HIDDEN_PIPELINE_IDS,
+    _TESTED_FILE,
+    _hidden_pipeline_entry,
+    _tested_catalog,
+    _visible_tested_catalog,
+    make_tools,
+)
 from validation import validate_layer, write_artifacts
+
+_PRIOR_WHITELIST_TOOLS = {"read_tested_pipeline"}
+_PRIOR_SUCCESS_TOOLS = {"list_successful_runs"}
+_PRIOR_HISTORY_TOOLS = {"get_last_error", "read_log", "search_previous_errors"}
+_PRIOR_EVIDENCE_TOOLS = _PRIOR_WHITELIST_TOOLS | _PRIOR_SUCCESS_TOOLS | _PRIOR_HISTORY_TOOLS
 
 
 def run_generator(
@@ -29,15 +41,29 @@ def run_generator(
     tools, runtime_paths = make_tools(config, repo_root, spark)
     client = DatabricksChatClient(config.model_endpoint)
     pipeline_run_id = uuid.uuid4().hex
+    _info(f"run log folder: {runtime_paths.log_root}/generator/{pipeline_run_id}")
     outcomes = []
     if config.max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
+    emit_event(
+        "generator_start",
+        pipeline=config.project_name,
+        pipeline_run_id=pipeline_run_id,
+        layers=list(config.layers),
+    )
     for layer in config.layers:
         if layer not in LAYERS:
             raise ValueError(f"Unsupported layer: {layer}")
         prior_messages: list[dict[str, Any]] | None = None
         last_error: str | None = None
         for attempt in range(1, config.max_attempts + 1):
+            emit_event(
+                "layer_attempt",
+                pipeline=config.project_name,
+                pipeline_run_id=pipeline_run_id,
+                layer=layer,
+                attempt=attempt,
+            )
             retry_feedback = None
             if last_error:
                 retry_feedback = (
@@ -60,6 +86,11 @@ def run_generator(
                     config.max_tool_rounds,
                     prior_messages=prior_messages,
                     retry_feedback=retry_feedback,
+                    attempt=attempt,
+                )
+                _require_prior_evidence(
+                    prior_messages,
+                    _visible_tested_catalog(repo_root / config.input_root / _TESTED_FILE),
                 )
                 errors = validate_layer(generated, layer)
                 if errors:
@@ -70,6 +101,13 @@ def run_generator(
                 # exist yet. Do not add another LLM round after SUCCESS; a failed job's Spark UI
                 # would support debugging, not optimization, and is outside this task.
                 if config.execute_generated:
+                    emit_event(
+                        "layer_execute",
+                        pipeline=config.project_name,
+                        pipeline_run_id=pipeline_run_id,
+                        layer=layer,
+                        attempt=attempt,
+                    )
                     active_workspace = workspace or client.workspace
                     execution = execute_with_temp_job(
                         active_workspace,
@@ -91,11 +129,21 @@ def run_generator(
                         layer=layer,
                     )
                     execution["status"] = execution.get("result", "UNKNOWN")
+                if config.promote_to_whitelist:
+                    promote_to_whitelist(config, repo_root, layer)
             except Exception as exc:
                 failed_messages = getattr(exc, "prior_messages", None)
                 if isinstance(failed_messages, list):
                     prior_messages = failed_messages
-                last_error = f"{type(exc).__name__}: {exc}"
+                last_error = f"{type(exc).__name__}: {slim_error(str(exc))}"
+                emit_event(
+                    "layer_failed",
+                    pipeline=config.project_name,
+                    pipeline_run_id=pipeline_run_id,
+                    layer=layer,
+                    attempt=attempt,
+                    error=last_error,
+                )
                 _record_attempt(
                     spark,
                     runtime_paths,
@@ -158,9 +206,68 @@ def run_generator(
                 outcome=outcome,
                 messages=prior_messages,
             )
+            emit_event(
+                "layer_passed",
+                pipeline=config.project_name,
+                pipeline_run_id=pipeline_run_id,
+                layer=layer,
+                attempt=attempt,
+                execution=execution.get("status"),
+            )
             outcomes.append(outcome)
             break
     return outcomes
+
+
+def _require_prior_evidence(
+    messages: list[dict[str, Any]] | None,
+    visible_catalog: list[dict[str, Any]],
+) -> None:
+    if not visible_catalog:
+        return
+    used = {
+        str(entry.get("name") or "")
+        for entry in tool_ledger(messages, limit=10_000)
+        if entry.get("name")
+    }
+    missing = []
+    if not used.intersection(_PRIOR_WHITELIST_TOOLS):
+        missing.append("read_tested_pipeline")
+    if not used.intersection(_PRIOR_SUCCESS_TOOLS):
+        missing.append("list_successful_runs")
+    if not used.intersection(_PRIOR_HISTORY_TOOLS):
+        missing.append("get_last_error|read_log|search_previous_errors")
+    if missing:
+        raise ValueError(
+            "Prior-evidence tools were required because a tested pipeline is listed: "
+            + ", ".join(missing)
+        )
+
+
+def promote_to_whitelist(config: GeneratorConfig, repo_root: Path, layer: str) -> None:
+    """Publish one successfully generated layer to the tested-pipeline catalog."""
+    catalog_path = repo_root / config.input_root / _TESTED_FILE
+    pipeline_id = f"{config.project_name}_{layer}"
+    kept = [
+        item
+        for item in _tested_catalog(catalog_path)
+        if item.get("id") not in {"tool_smoke_sample", pipeline_id, *_HIDDEN_PIPELINE_IDS}
+        and not _hidden_pipeline_entry(item)
+    ]
+    kept.append(
+        {
+            "id": pipeline_id,
+            "layer": layer,
+            "path": f"{config.output_root.rstrip('/')}/notebooks/{layer}.py",
+            "status": "tested",
+            "project_name": config.project_name,
+        }
+    )
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path.write_text(
+        json.dumps({"pipelines": kept}, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _non_retryable(exc: BaseException) -> bool:
@@ -232,7 +339,7 @@ def _record_attempt(
         },
     )
     if log_path is not None:
-        print(json.dumps({"event": "run_log_written", "path": log_path}))
+        _info(f"run_log_written path={log_path}", blank_after=True)
 
 
 def main() -> None:

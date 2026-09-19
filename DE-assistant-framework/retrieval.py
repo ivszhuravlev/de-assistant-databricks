@@ -158,17 +158,33 @@ def search_run_errors(spark, paths, query: str, limit: int = 10) -> list[dict[st
 
 
 def get_last_error(spark, paths, pipeline: str, layer: str) -> dict[str, Any] | None:
-    """Return the newest failed attempt for one pipeline and layer."""
-    matches = [
-        row
-        for row in load_error_records(spark, paths)
-        if row.get("status") == "FAILED"
-        and row.get("pipeline") == pipeline
-        and row.get("layer") == layer
+    """Newest failed attempt. Prefer this pipeline+layer, then this layer, then any failure."""
+    failed = [
+        row for row in load_error_records(spark, paths) if row.get("status") == "FAILED"
     ]
-    if not matches:
+    return _latest_failed(failed, pipeline, layer)
+
+
+def _latest_failed(
+    records: list[dict[str, Any]], pipeline: str, layer: str
+) -> dict[str, Any] | None:
+    failed = [
+        row
+        for row in records
+        if str(row.get("status") or "FAILED").upper() == "FAILED"
+    ]
+    if not failed:
         return None
-    return max(matches, key=lambda row: str(row.get("created_at") or ""))
+    for matchers in (
+        lambda row: str(row.get("pipeline") or "") == pipeline
+        and str(row.get("layer") or "") == layer,
+        lambda row: str(row.get("layer") or "") == layer,
+        lambda _row: True,
+    ):
+        matches = [row for row in failed if matchers(row)]
+        if matches:
+            return max(matches, key=lambda row: str(row.get("created_at") or ""))
+    return None
 
 
 def find_past_fix(

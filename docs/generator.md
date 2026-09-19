@@ -88,9 +88,10 @@ number when silver starts.
 - `read_log`: tail a prior generator run log.
 - `list_successful_runs`: SUCCESS metadata rows only.
 - `read_tested_pipeline`: listed notebooks only. The hand-built eval (`taxi_vertical_slice.py`) is hidden.
-- `semantic_search`: parked; it is not used.
+- The whitelist is `spec/tested-pipelines.json`; promote with the `promote_to_whitelist` widget, while evals stay hidden.
 
 All tools are read-only. Generated code performs writes through `pipeline_helpers.py`.
+Databricks Claude prompt caching uses `cache_control` on the stable system prefix.
 
 ## Metadata
 

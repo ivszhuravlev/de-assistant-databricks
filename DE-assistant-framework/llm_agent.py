@@ -3,10 +3,40 @@
 from __future__ import annotations
 
 import json
+import sys
+from datetime import datetime
 from typing import Any
 
 from llm_model import DatabricksChatClient
 from tools import ReadOnlyTools
+
+
+_MILESTONE_EVENTS = frozenset(
+    {"generator_start", "layer_failed", "layer_passed", "layer_execute"}
+)
+
+
+def _blank() -> None:
+    print("", flush=True)
+    sys.stdout.flush()
+
+
+def _info(message: str, *, blank_after: bool = False) -> None:
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{stamp} INFO {message}", flush=True)
+    if blank_after:
+        _blank()
+    sys.stdout.flush()
+
+
+def emit_event(event: str, **fields: Any) -> None:
+    """Watchable notebook line in the same INFO stream as the agent loop."""
+    extras = " ".join(
+        f"{key}={value}"
+        for key, value in fields.items()
+        if value is not None
+    )
+    _info(f"{event} {extras}".rstrip(), blank_after=event in _MILESTONE_EVENTS)
 
 
 def run_tool_loop(
@@ -17,8 +47,11 @@ def run_tool_loop(
     max_rounds: int,
     prior_messages: list[dict[str, Any]] | None = None,
     retry_feedback: str | None = None,
+    attempt: int = 1,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    endpoint = getattr(client, "endpoint", "") or ""
     if prior_messages is None:
+        _info(f"layer {layer} generation first")
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
             {
@@ -27,6 +60,7 @@ def run_tool_loop(
             },
         ]
     else:
+        _info(f"layer {layer} generation retry")
         messages = list(prior_messages)
         messages.append(
             {
@@ -35,14 +69,27 @@ def run_tool_loop(
                 or "The previous attempt failed. Fix it and return the complete JSON again.",
             }
         )
-    for _ in range(max_rounds):
+    _info(f"layer {layer} attempt {attempt} agent loop started, endpoint={endpoint}")
+    for turn in range(1, max_rounds + 1):
         try:
             message = client.complete(messages, tools.definitions())
         except Exception as exc:
             setattr(exc, "prior_messages", messages)
             raise
-        messages.append(message)
+        usage = getattr(client, "last_usage", None) or {}
         tool_calls = message.get("tool_calls") or []
+        tool_names = ",".join(
+            str((call.get("function") or {}).get("name") or "")
+            for call in tool_calls
+        ) or "-"
+        _info(
+            f"layer {layer} attempt {attempt} turn {turn} endpoint={endpoint} "
+            f"prompt={usage.get('prompt', 0)} completion={usage.get('completion', 0)} "
+            f"tool_calls={len(tool_calls)} tools={tool_names} "
+            f"cache_read={usage.get('cache_read', 0)} "
+            f"cache_write={usage.get('cache_write', 0)}"
+        )
+        messages.append(message)
         if not tool_calls:
             content = message.get("content") or ""
             try:
@@ -52,8 +99,11 @@ def run_tool_loop(
                 raise
         for call in tool_calls:
             function = call["function"]
+            name = function["name"]
+            arguments = function.get("arguments") or "{}"
+            _info(f"layer {layer} attempt {attempt} tool {name}")
             try:
-                result = tools.call(function["name"], json.loads(function.get("arguments") or "{}"))
+                result = tools.call(name, json.loads(arguments or "{}"))
             except Exception as exc:
                 result = json.dumps({"error": str(exc)})
             messages.append(
