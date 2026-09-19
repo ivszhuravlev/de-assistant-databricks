@@ -200,6 +200,18 @@ def _direct_write_delta_errors(tree: ast.AST) -> list[str]:
     return []
 
 
+_EVAL_PACKAGE = re.compile(
+    r"(?m)^\s*(?:from|import)\s+evals\b|(?:^|[^\w.])evals[./][A-Za-z_]"
+)
+
+
+def _eval_package_errors(content: str) -> list[str]:
+    """Generated code must not reach the operator benchmark it is scored against."""
+    if _EVAL_PACKAGE.search(content):
+        return ["reads the operator eval package; generated code must not touch evals/"]
+    return []
+
+
 def _name_guard_errors(content: str) -> list[str]:
     if re.search(r"\bif\s+__name__\b", content) or re.search(
         r"(?<!\.)\b__name__\s*(==|!=)", content
@@ -288,6 +300,8 @@ def validate_layer(result: dict[str, Any], expected_layer: str) -> list[str]:
             errors.append(f"{path} calls transform(spark, {{}}) and drops config_json")
         for name_error in _name_guard_errors(content):
             errors.append(f"{path} {name_error}")
+        for eval_error in _eval_package_errors(content):
+            errors.append(f"{path} {eval_error}")
         if re.search(r"(?m)^\s*(import helpers|from helpers import)\b", content):
             errors.append(f"{path} imports a nonexistent helpers module")
         if "load_paths(" in content and "output_space" not in content:

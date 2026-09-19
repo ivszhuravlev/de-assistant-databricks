@@ -12,7 +12,7 @@ Runtime only: prompt, tools, validate, execute. No eval scores and no operator d
 | `pipeline_helpers.py` / `metadata.py` / `retrieval.py` | paths, observer tables, error search |
 | `prompts.py` | generic harness contract |
 | `config.py` / `workspace_paths.py` | run config, repo root |
-| `placeholders.py` | `notify` no-op for eval slices; unused `judge` stub |
+| `placeholders.py` | `notify` no-op for eval slices |
 
 Operator docs: [`docs/generator.md`](../docs/generator.md).
 Taxi score: [`evals/taxi/score.py`](../evals/taxi/score.py).

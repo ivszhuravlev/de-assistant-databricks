@@ -651,6 +651,28 @@ def test_validate_rejects_name_guard():
     assert any("__name__" in error for error in validate_layer(result, "bronze"))
 
 
+def test_validate_rejects_reading_the_operator_eval():
+    for reach in (
+        "from evals.taxi import score",
+        "import evals",
+        "spark.read.text('evals/taxi/score.py')",
+    ):
+        result = valid_result()
+        result["artifacts"][0]["content"] = (
+            "# Databricks notebook source\n"
+            f"{reach}\n"
+            "def transform(spark, config: dict) -> None:\n"
+            "    return None\n"
+        )
+        errors = validate_layer(result, "bronze")
+        assert any("must not touch evals/" in error for error in errors), reach
+
+    clean = valid_result()
+    assert not [
+        error for error in validate_layer(clean, "bronze") if "evals/" in error
+    ]
+
+
 def test_validate_rejects_write_delta_for_published_table():
     result = valid_result()
     result["artifacts"][0]["content"] = (
