@@ -1,5 +1,7 @@
 # Generator guide
 
+Product landing page: [`../README.md`](../README.md).
+
 This folder is the flat runtime kernel for generating Databricks bronze, silver, and gold
 notebooks. The model endpoint is `databricks-claude-haiku-4-5`; workspace access uses the
 Databricks CLI profile selected by the operator.

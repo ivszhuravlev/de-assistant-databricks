@@ -1,5 +1,7 @@
 # NYC taxi pipeline: Zoomcamp-faithful specification
 
+Start at [`../README.md`](../README.md). This file is course-mapping notes, not the product intro.
+
 ## Purpose and boundary
 
 This is the Zoomcamp-derived pipeline that the Databricks framework must be able to generate. It preserves the source data, model grains, unions, joins, deduplication, and monthly revenue mart demonstrated in Data Engineering Zoomcamp modules 2–4, while translating the course's GCS/BigQuery/dbt implementation into bronze, silver, and gold layers.

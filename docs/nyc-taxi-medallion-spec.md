@@ -1,5 +1,7 @@
 # NYC Taxi Medallion Pipeline Generation Requirements
 
+Start at [`../README.md`](../README.md). This file is an early taxi contract, not the product intro.
+
 ## 1. Purpose and scope
 
 This is the Gate 1 business and data contract for the pipeline that the new framework must be able to generate. The generated artifact is a Databricks Workflow composed of Databricks notebooks written in PySpark. It must implement:
