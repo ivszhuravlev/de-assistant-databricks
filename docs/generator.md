@@ -143,3 +143,5 @@ the next retry.
 
 Eval scores are not in this kernel. Taxi expected counts live in `evals/taxi/score.py`.
 Procedure: [`docs/pipeline-eval.md`](pipeline-eval.md). Generated tables go to `gen_*` schemas.
+`reset_generated` drops generated Hive tables and each pipeline's generated Delta root
+(taxi, transaction_cat, fresh_retail). Eval schemas stay.

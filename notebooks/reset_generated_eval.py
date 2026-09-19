@@ -14,21 +14,24 @@ sys.path.insert(0, str(repo_root_hint / "DE-assistant-framework"))
 from workspace_paths import default_repo_root
 
 repo_root = Path(default_repo_root(dbutils))
+sys.path.insert(0, str(repo_root))
 sys.path.insert(0, str(repo_root / "DE-assistant-framework"))
 
+from evals.fresh_retail.score import TABLES as RETAIL_TABLES
+from evals.taxi.score import TABLES as TAXI_TABLES
+from evals.transaction_cat.score import TABLES as TX_TABLES
 from pipeline_helpers import configure_session_spark, load_paths
 
 configure_session_spark(spark)
-paths = load_paths("adls", output_space="generated")
-tables = {
-    "bronze": ("yellow_tripdata", "green_tripdata", "taxi_zone_lookup"),
-    "silver": ("trips", "rejected_trips"),
-    "gold": ("dim_zones", "fct_trips", "fct_monthly_zone_revenue"),
-}
 
-for layer, names in tables.items():
-    for table in names:
+for pipeline, tables in (
+    ("taxi", TAXI_TABLES),
+    ("transaction_cat", TX_TABLES),
+    ("fresh_retail", RETAIL_TABLES),
+):
+    paths = load_paths("adls", output_space="generated", pipeline=pipeline)
+    for layer, table in tables:
         spark.sql(f"DROP TABLE IF EXISTS {paths.table(layer, table)}")
+    dbutils.fs.rm(paths.delta_root, True)
 
-dbutils.fs.rm(paths.delta_root, True)
 dbutils.notebook.exit("generated schemas reset; eval tables untouched")

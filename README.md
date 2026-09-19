@@ -42,7 +42,10 @@ databricks bundle deploy -t dev
 databricks bundle run taxi_vertical_slice -t dev
 databricks bundle run run_generator -t dev
 databricks bundle run verify_generated -t dev
+databricks bundle run reset_generated -t dev
 ```
+
+`reset_generated` clears generated tables for taxi, transaction_cat, and fresh_retail. Eval tables stay.
 
 Eval procedures: [`evals/README.md`](evals/README.md).
 

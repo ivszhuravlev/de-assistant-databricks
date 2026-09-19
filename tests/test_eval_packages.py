@@ -63,6 +63,16 @@ def test_transaction_score_uses_landed_bronze_counts():
     assert tx_failures(result) == []
 
 
+def test_reset_generated_notebook_covers_all_eval_pipelines():
+    text = (ROOT / "notebooks" / "reset_generated_eval.py").read_text(encoding="utf-8")
+    assert "from evals.taxi.score import TABLES" in text
+    assert "from evals.transaction_cat.score import TABLES" in text
+    assert "from evals.fresh_retail.score import TABLES" in text
+    assert 'sys.path.insert(0, str(repo_root))' in text
+    assert 'load_paths("adls", output_space="generated", pipeline=pipeline)' in text
+    assert "paths.delta_root" in text
+
+
 def test_taxi_expected_counts_unchanged():
     assert TAXI_COUNTS["bronze.yellow_tripdata"] == 1_369_765
     assert TAXI_COUNTS["gold.fct_monthly_zone_revenue"] == 495
