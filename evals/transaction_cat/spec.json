@@ -12,11 +12,11 @@
     "pipeline": "transaction_cat"
   },
   "raw": {
-    "root": "abfss://raw@exampleaccount.dfs.core.windows.net/transaction_cat",
+    "root": "abfss://raw@<adls_account>.dfs.core.windows.net/transaction_cat",
     "files": {
-      "transactions": "abfss://raw@exampleaccount.dfs.core.windows.net/transaction_cat/transaction_cat.parquet",
-      "category_taxonomy": "abfss://raw@exampleaccount.dfs.core.windows.net/transaction_cat/category_taxonomy.jsonl",
-      "country_currency": "abfss://raw@exampleaccount.dfs.core.windows.net/transaction_cat/country_currency.jsonl"
+      "transactions": "abfss://raw@<adls_account>.dfs.core.windows.net/transaction_cat/transaction_cat_snapshot.parquet",
+      "category_taxonomy": "abfss://raw@<adls_account>.dfs.core.windows.net/transaction_cat/category_taxonomy.jsonl",
+      "country_currency": "abfss://raw@<adls_account>.dfs.core.windows.net/transaction_cat/country_currency.jsonl"
     }
   },
   "identity": ["transaction_description", "category", "country", "currency"],

@@ -182,31 +182,19 @@ def copy_dbfs_parquet_dir(src: str, dest: str) -> str:
     return copy_dbfs_parquet_dir(src + "_one", dest)
 
 
-def canonicalize_parquet(files: list[str], dest: str) -> str:
-    if exists(dest):
-        return dest
-    if not files:
-        raise FileNotFoundError(f"No parquet files to canonicalize into {dest}")
-    if len(files) == 1 and files[0].rstrip("/") != dest.rstrip("/"):
-        dbutils.fs.cp(files[0], dest, True)
-        return dest
-    staged = "dbfs:/de-assist-databricks/tmp/canonicalize_eval_raw"
-    dbutils.fs.rm(staged, True)
-    spark.read.parquet(*files).coalesce(1).write.mode("overwrite").parquet(staged)
-    return copy_dbfs_parquet_dir(staged, dest)
-
-
 report = {
     "transaction_cat": {"root": TX_ROOT, "before": list_names(TX_ROOT)},
     "fresh_reatail_net": {"root": RETAIL_ROOT, "before": list_names(RETAIL_ROOT)},
     "actions": [],
 }
 
-tx_parquet = parquet_files(TX_ROOT)
-if not tx_parquet:
-    result = copy_http(HF_TX, f"{TX_ROOT}/transaction_cat.parquet")
+canonical_tx = f"{TX_ROOT}/transaction_cat.parquet"
+snapshot_tx = f"{TX_ROOT}/transaction_cat_snapshot.parquet"
+if not exists(canonical_tx) and not exists(snapshot_tx):
+    result = copy_http(HF_TX, canonical_tx)
     report["actions"].append(result)
     if result["status"] != "copied":
+        dbutils.fs.rm(canonical_tx, True)
         n = 1_000_000
         categories = [row["category"] for row in CATEGORY_TAXONOMY]
         countries = [row["country"] for row in GEO_PAIRS]
@@ -226,20 +214,35 @@ if not tx_parquet:
         staged = "dbfs:/de-assist-databricks/tmp/transaction_cat_generated"
         dbutils.fs.rm(staged, True)
         generated.coalesce(4).write.mode("overwrite").parquet(staged)
-        copy_dbfs_parquet_dir(staged, f"{TX_ROOT}/transaction_cat.parquet")
+        copy_dbfs_parquet_dir(staged, snapshot_tx)
         report["actions"].append(
             {
                 "status": "generated_sample",
-                "dest": f"{TX_ROOT}/transaction_cat.parquet",
+                "dest": snapshot_tx,
                 "rows": n,
                 "reason": result.get("error"),
             }
         )
-tx_parquet = parquet_files(TX_ROOT)
-canonical_tx = f"{TX_ROOT}/transaction_cat.parquet"
-if tx_parquet and not exists(canonical_tx):
-    dest = canonicalize_parquet(tx_parquet, canonical_tx)
-    report["actions"].append({"status": "canonicalize", "src": tx_parquet, "dest": dest})
+
+if exists(canonical_tx) and not exists(snapshot_tx):
+    hub = spark.read.parquet(canonical_tx)
+    stable_columns = sorted(hub.columns, key=str.lower)
+    snapshot = hub.orderBy(
+        *[F.col(column).asc_nulls_first() for column in stable_columns]
+    ).limit(1_000_000)
+    staged = "dbfs:/de-assist-databricks/tmp/transaction_cat_snapshot"
+    dbutils.fs.rm(staged, True)
+    snapshot.coalesce(1).write.mode("overwrite").parquet(staged)
+    copy_dbfs_parquet_dir(staged, snapshot_tx)
+    report["actions"].append(
+        {
+            "status": "materialized_snapshot",
+            "src": canonical_tx,
+            "dest": snapshot_tx,
+            "rows": 1_000_000,
+            "order_by": stable_columns,
+        }
+    )
 
 write_jsonl(f"{TX_ROOT}/category_taxonomy.jsonl", CATEGORY_TAXONOMY)
 write_jsonl(f"{TX_ROOT}/country_currency.jsonl", GEO_PAIRS)
@@ -275,12 +278,14 @@ def peek(path: str) -> dict:
 report["transaction_cat"]["after"] = list_names(TX_ROOT)
 report["fresh_reatail_net"]["after"] = list_names(RETAIL_ROOT)
 report["peeks"] = [
-    peek(f"{TX_ROOT}/transaction_cat.parquet"),
+    peek(snapshot_tx),
     peek(f"{TX_ROOT}/category_taxonomy.jsonl"),
     peek(f"{TX_ROOT}/country_currency.jsonl"),
     peek(f"{RETAIL_ROOT}/train.parquet"),
     peek(f"{RETAIL_ROOT}/eval.parquet"),
 ]
+if exists(canonical_tx):
+    report["transaction_cat"]["hub_copy"] = peek(canonical_tx)
 print(json.dumps(report, indent=2, default=str))
 missing = [item["path"] for item in report["peeks"] if item.get("missing") or not item.get("count")]
 if missing:

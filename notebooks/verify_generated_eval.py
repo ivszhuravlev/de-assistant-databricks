@@ -5,12 +5,10 @@ import json
 import sys
 from pathlib import Path
 
+dbutils.widgets.text("pipeline", "taxi")
 dbutils.widgets.text("pipeline_run_id", "")
 dbutils.widgets.text("repo_root", "")
-dbutils.widgets.text(
-    "count_snapshot_path",
-    "dbfs:/de-assist-databricks/metadata/generated_eval_previous_counts.json",
-)
+dbutils.widgets.text("count_snapshot_path", "")
 
 repo_root_hint = Path(dbutils.widgets.get("repo_root").strip() or Path.cwd())
 if repo_root_hint.name in {"notebooks", "DE-assistant-framework"}:
@@ -23,24 +21,43 @@ repo_root = Path(default_repo_root(dbutils))
 sys.path.insert(0, str(repo_root))
 sys.path.insert(0, str(repo_root / "DE-assistant-framework"))
 from pipeline_helpers import load_paths
-from evals.taxi.score import (
-    EXPECTED_COUNTS,
-    TABLES,
-    collect_failures,
-    eval_untouched as score_eval_untouched,
-    expected_match as score_expected_match,
-    same_as_eval as score_same_as_eval,
-)
+from evals.fresh_retail import score as retail_score
+from evals.taxi import score as taxi_score
+from evals.transaction_cat import score as tx_score
+
+pipeline = dbutils.widgets.get("pipeline").strip() or "taxi"
+SCORE = {
+    "taxi": taxi_score,
+    "fresh_retail": retail_score,
+    "transaction_cat": tx_score,
+}
+if pipeline not in SCORE:
+    raise ValueError(f"Unsupported pipeline {pipeline!r}; expected {sorted(SCORE)}")
+score = SCORE[pipeline]
+EXPECTED_COUNTS = score.EXPECTED_COUNTS
+TABLES = score.TABLES
+collect_failures = score.collect_failures
+score_eval_untouched = score.eval_untouched
+score_expected_match = score.expected_match
+score_same_as_eval = score.same_as_eval
+PROJECT_NAME = {
+    "taxi": "nyc_taxi_january_2021",
+    "fresh_retail": "fresh_retail",
+    "transaction_cat": "transaction_cat",
+}[pipeline]
 
 pipeline_run_id = dbutils.widgets.get("pipeline_run_id").strip()
-count_snapshot_path = dbutils.widgets.get("count_snapshot_path")
-eval_paths = load_paths("adls", output_space="eval")
-gen_paths = load_paths("adls", output_space="generated")
+count_snapshot_path = dbutils.widgets.get("count_snapshot_path").strip() or (
+    f"dbfs:/de-assist-databricks/metadata/generated_eval_previous_counts_{pipeline}.json"
+)
+eval_paths = load_paths("adls", output_space="eval", pipeline=pipeline)
+gen_paths = load_paths("adls", output_space="generated", pipeline=pipeline)
 if not pipeline_run_id:
     try:
         latest = (
             spark.read.format("delta")
             .load("dbfs:/de-assist-databricks/metadata/generator_runs")
+            .where(f"project_name = '{PROJECT_NAME}'")
             .orderBy("generated_at", ascending=False)
             .limit(1)
             .first()
@@ -65,7 +82,17 @@ def counts_for(paths):
 def safe_sql_count(sql, default=None):
     try:
         return spark.sql(sql).first()[0]
-    except Exception:
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "event": "verify_sql_failed",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "sql": sql.strip().splitlines()[0][:200],
+                }
+            )
+        )
         return default
 
 
@@ -77,65 +104,169 @@ missing_generated_tables = [
 expected_match = score_expected_match(eval_counts, generated_counts)
 same_as_eval = score_same_as_eval(eval_counts, generated_counts)
 eval_untouched = score_eval_untouched(eval_counts)
+taxi_yellow = table_count(load_paths("adls", output_space="eval", pipeline="taxi"), "bronze", "yellow_tripdata")
+taxi_eval_untouched = taxi_yellow == 1369765
 
-silver_trips = gen_paths.table("silver", "trips")
-rejected = gen_paths.table("silver", "rejected_trips")
-facts = gen_paths.table("gold", "fct_trips")
-monthly = gen_paths.table("gold", "fct_monthly_zone_revenue")
-
-silver_duplicate_groups = safe_sql_count(
-    f"""
-    SELECT count(*) AS groups FROM (
-      SELECT vendor_id, pickup_datetime, pickup_location_id, service_type
-      FROM {silver_trips}
-      GROUP BY vendor_id, pickup_datetime, pickup_location_id, service_type
-      HAVING count(*) > 1
+silver_duplicate_groups = None
+invalid_dead_letter_rows = None
+missing_reject_reasons = None
+monthly_duplicate_groups = None
+monthly_mismatches = None
+category_country_mismatches = None
+store_daily_mismatches = None
+category_daily_mismatches = None
+if pipeline == "taxi":
+    silver_trips = gen_paths.table("silver", "trips")
+    rejected = gen_paths.table("silver", "rejected_trips")
+    facts = gen_paths.table("gold", "fct_trips")
+    monthly = gen_paths.table("gold", "fct_monthly_zone_revenue")
+    silver_duplicate_groups = safe_sql_count(
+        f"""
+        SELECT count(*) AS groups FROM (
+          SELECT vendor_id, pickup_datetime, pickup_location_id, service_type
+          FROM {silver_trips}
+          GROUP BY vendor_id, pickup_datetime, pickup_location_id, service_type
+          HAVING count(*) > 1
+        )
+        """,
+        default=-1,
     )
-    """,
-    default=-1,
-)
-invalid_dead_letter_rows = safe_sql_count(
-    f"SELECT count(*) AS rows FROM {rejected} WHERE vendor_id IS NOT NULL AND pickup_datetime IS NOT NULL",
-    default=-1,
-)
-missing_reject_reasons = safe_sql_count(
-    f"SELECT count(*) AS rows FROM {rejected} WHERE reject_reason IS NULL",
-    default=-1,
-)
-monthly_duplicate_groups = safe_sql_count(
-    f"""
-    SELECT count(*) AS groups FROM (
-      SELECT pickup_zone, revenue_month, service_type
-      FROM {monthly}
-      GROUP BY pickup_zone, revenue_month, service_type
-      HAVING count(*) > 1
+    invalid_dead_letter_rows = safe_sql_count(
+        f"SELECT count(*) AS rows FROM {rejected} WHERE vendor_id IS NOT NULL AND pickup_datetime IS NOT NULL",
+        default=-1,
     )
-    """,
-    default=-1,
-)
-monthly_mismatches = safe_sql_count(
-    f"""
-    WITH facts AS (
-      SELECT
-        coalesce(pickup_zone, 'Unknown Zone') AS pickup_zone,
-        date_trunc('month', pickup_datetime) AS revenue_month,
-        service_type,
-        sum(total_amount) AS total_amount,
-        count(trip_id) AS trip_count
-      FROM {facts}
-      GROUP BY 1, 2, 3
+    missing_reject_reasons = safe_sql_count(
+        f"SELECT count(*) AS rows FROM {rejected} WHERE reject_reason IS NULL",
+        default=-1,
     )
-    SELECT count(*) AS groups
-    FROM facts f
-    FULL JOIN {monthly} m
-      USING (pickup_zone, revenue_month, service_type)
-    WHERE f.trip_count IS NULL
-       OR m.total_monthly_trips IS NULL
-       OR NOT (f.trip_count <=> m.total_monthly_trips)
-       OR abs(coalesce(f.total_amount, 0) - coalesce(m.revenue_monthly_total_amount, 0)) > 0.01
-    """,
-    default=-1,
-)
+    monthly_duplicate_groups = safe_sql_count(
+        f"""
+        SELECT count(*) AS groups FROM (
+          SELECT pickup_zone, revenue_month, service_type
+          FROM {monthly}
+          GROUP BY pickup_zone, revenue_month, service_type
+          HAVING count(*) > 1
+        )
+        """,
+        default=-1,
+    )
+    monthly_mismatches = safe_sql_count(
+        f"""
+        WITH facts AS (
+          SELECT
+            coalesce(pickup_zone, 'Unknown Zone') AS pickup_zone,
+            date_trunc('month', pickup_datetime) AS revenue_month,
+            service_type,
+            sum(total_amount) AS total_amount,
+            count(trip_id) AS trip_count
+          FROM {facts}
+          GROUP BY 1, 2, 3
+        )
+        SELECT count(*) AS groups
+        FROM facts f
+        FULL JOIN {monthly} m
+          USING (pickup_zone, revenue_month, service_type)
+        WHERE f.trip_count IS NULL
+           OR m.total_monthly_trips IS NULL
+           OR NOT (f.trip_count <=> m.total_monthly_trips)
+           OR abs(coalesce(f.total_amount, 0) - coalesce(m.revenue_monthly_total_amount, 0)) > 0.01
+        """,
+        default=-1,
+    )
+elif pipeline == "transaction_cat":
+    rejected = gen_paths.table("silver", "rejected_transactions")
+    facts = gen_paths.table("gold", "fct_transactions")
+    monthly = gen_paths.table("gold", "fct_category_country")
+    missing_reject_reasons = safe_sql_count(
+        f"SELECT count(*) AS rows FROM {rejected} WHERE reject_reason IS NULL",
+        default=-1,
+    )
+    invalid_dead_letter_rows = safe_sql_count(
+        f"""
+        SELECT count(*) AS rows FROM {rejected}
+        WHERE reject_reason IS NULL OR trim(reject_reason) = ''
+        """,
+        default=-1,
+    )
+    category_country_mismatches = safe_sql_count(
+        f"""
+        WITH facts AS (
+          SELECT
+            category_code,
+            country_norm,
+            currency_norm,
+            count(*) AS txn_count
+          FROM {facts}
+          GROUP BY 1, 2, 3
+        )
+        SELECT count(*) AS groups
+        FROM facts f
+        FULL JOIN {monthly} m
+          USING (category_code, country_norm, currency_norm)
+        WHERE f.txn_count IS NULL
+           OR m.txn_count IS NULL
+           OR NOT (f.txn_count <=> m.txn_count)
+        """,
+        default=-1,
+    )
+elif pipeline == "fresh_retail":
+    rejected = gen_paths.table("silver", "rejected_sales")
+    facts = gen_paths.table("gold", "fct_daily_sales")
+    store_daily = gen_paths.table("gold", "fct_store_daily")
+    category_daily = gen_paths.table("gold", "fct_category_daily")
+    missing_reject_reasons = safe_sql_count(
+        f"SELECT count(*) AS rows FROM {rejected} WHERE reject_reason IS NULL",
+        default=-1,
+    )
+    invalid_dead_letter_rows = safe_sql_count(
+        f"""
+        SELECT count(*) AS rows FROM {rejected}
+        WHERE reject_reason IS NULL OR trim(reject_reason) = ''
+        """,
+        default=-1,
+    )
+    store_daily_mismatches = safe_sql_count(
+        f"""
+        WITH facts AS (
+          SELECT
+            store_id,
+            sale_date,
+            _split,
+            sum(sale_amount) AS sale_amount
+          FROM {facts}
+          GROUP BY 1, 2, 3
+        )
+        SELECT count(*) AS groups
+        FROM facts f
+        FULL JOIN {store_daily} m
+          USING (store_id, sale_date, _split)
+        WHERE f.sale_amount IS NULL
+           OR m.store_sale_amount IS NULL
+           OR abs(coalesce(f.sale_amount, 0) - coalesce(m.store_sale_amount, 0)) > 0.01
+        """,
+        default=-1,
+    )
+    category_daily_mismatches = safe_sql_count(
+        f"""
+        WITH facts AS (
+          SELECT
+            first_category_id,
+            sale_date,
+            _split,
+            sum(sale_amount) AS sale_amount
+          FROM {facts}
+          GROUP BY 1, 2, 3
+        )
+        SELECT count(*) AS groups
+        FROM facts f
+        FULL JOIN {category_daily} m
+          USING (first_category_id, sale_date, _split)
+        WHERE f.sale_amount IS NULL
+           OR m.category_sale_amount IS NULL
+           OR abs(coalesce(f.sale_amount, 0) - coalesce(m.category_sale_amount, 0)) > 0.01
+        """,
+        default=-1,
+    )
 
 pipeline_rows = 0
 layer_rows = 0
@@ -196,14 +327,22 @@ result = {
     "missing_reject_reasons": missing_reject_reasons,
     "monthly_duplicate_groups": monthly_duplicate_groups,
     "monthly_mismatches": monthly_mismatches,
+    "category_country_mismatches": category_country_mismatches,
+    "store_daily_mismatches": store_daily_mismatches,
+    "category_daily_mismatches": category_daily_mismatches,
     "pipeline_rows": pipeline_rows,
     "layer_rows": layer_rows,
     "quality_rows": quality_rows,
     "idempotency_passed": idempotency_passed,
     "count_deltas": count_deltas,
+    "pipeline": pipeline,
     "pipeline_run_id": pipeline_run_id,
+    "taxi_eval_untouched": taxi_eval_untouched,
+    "taxi_yellow": taxi_yellow,
 }
 failures = collect_failures(result)
+if not taxi_eval_untouched:
+    failures.append("taxi_eval_untouched")
 result["failures"] = failures
 print(json.dumps(result, indent=2, sort_keys=True, default=str))
 if failures:

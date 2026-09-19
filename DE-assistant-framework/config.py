@@ -23,11 +23,12 @@ class GeneratorConfig:
     layers: list[str] = field(default_factory=lambda: list(LAYERS))
     execute_generated: bool = False
     temp_existing_cluster_id: str = "UNKNOWN"
-    max_tool_rounds: int = 8
+    max_tool_rounds: int = 16
     max_attempts: int = 3
     error_log_path: str = "dbfs:/de-assist-databricks/delta/de_assist/run_errors"
     raw_backend: str = "adls"
     output_space: str = "generated"
+    pipeline: str = "taxi"
 
     @classmethod
     def load(cls, path: str | Path) -> "GeneratorConfig":

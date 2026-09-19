@@ -66,6 +66,9 @@ def run_generator(
                     raise ValueError(f"{layer} validation failed: {'; '.join(errors)}")
                 paths = write_artifacts(generated, repo_root / config.output_root)
                 execution = {"status": "SKIPPED"}
+                # The tool loop runs before execute_generated, so this job's Spark UI does not
+                # exist yet. Do not add another LLM round after SUCCESS; a failed job's Spark UI
+                # would support debugging, not optimization, and is outside this task.
                 if config.execute_generated:
                     active_workspace = workspace or client.workspace
                     execution = execute_with_temp_job(
@@ -77,6 +80,7 @@ def run_generator(
                                 "project_name": config.project_name,
                                 "backend": config.raw_backend or "adls",
                                 "output_space": config.output_space or "generated",
+                                "pipeline": getattr(config, "pipeline", "taxi") or "taxi",
                                 "repo_root": str(repo_root),
                                 "pipeline_run_id": pipeline_run_id,
                             }
@@ -104,7 +108,7 @@ def run_generator(
                     generated=generated,
                     messages=prior_messages,
                 )
-                if attempt == config.max_attempts:
+                if _non_retryable(exc) or attempt == config.max_attempts:
                     raise RuntimeError(
                         f"{layer} failed after {config.max_attempts} attempts: {last_error}"
                     ) from exc
@@ -145,6 +149,14 @@ def run_generator(
             outcomes.append(outcome)
             break
     return outcomes
+
+
+def _non_retryable(exc: BaseException) -> bool:
+    """Timeouts and user/job cancels are stuck signals, not code the model should rewrite."""
+    if isinstance(exc, TimeoutError):
+        return True
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return "timeout" in text or "canceled" in text or "cancelled" in text
 
 
 def _generated_code(generated: dict[str, Any] | None) -> str:

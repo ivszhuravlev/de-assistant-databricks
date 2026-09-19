@@ -13,7 +13,7 @@ databricks bundle deploy -t dev
 databricks bundle run taxi_vertical_slice -t dev
 ```
 
-Raw (already landed): `abfss://raw@exampleaccount.dfs.core.windows.net/taxi_data/`
+Raw data is already landed under `taxi_data/` in the configured ADLS container.
 
 SAS in secret scope `de-assist-databricks`, keys `adls_sas` or `adls-sas`. Delta / Hive on DBFS.
 

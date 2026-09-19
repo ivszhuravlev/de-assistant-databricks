@@ -16,8 +16,9 @@ from workspace_paths import default_repo_root
 repo_root = Path(default_repo_root(dbutils))
 sys.path.insert(0, str(repo_root / "DE-assistant-framework"))
 
-from pipeline_helpers import load_paths
+from pipeline_helpers import configure_session_spark, load_paths
 
+configure_session_spark(spark)
 paths = load_paths("adls", output_space="generated")
 tables = {
     "bronze": ("yellow_tripdata", "green_tripdata", "taxi_zone_lookup"),

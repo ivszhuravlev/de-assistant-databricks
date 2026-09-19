@@ -1,5 +1,5 @@
 Helper signatures. Call them exactly like this. Do not invent extra arguments.
-Pipeline-specific paths, grains, columns, and counts live in pipeline_spec, not here.
+How the pipeline should behave lives in pipeline_brief, not here.
 
 actual_column(df.columns, name) -> str
     Returns the real column name. Use it inside F.col(...). Never F.to_date(actual_column(...))
@@ -15,18 +15,28 @@ validate_counts(table_name, row_count, missing, duplicate_groups=None, allow_emp
         dups = df.groupBy(*grain).count().where(F.col("count") > 1).count()
         validate_counts(fqtn, row_count, missing, dups)
 
-write_delta(df, spark, paths, layer, table, mode="overwrite", partition_by=None) -> str
+write_delta(df, spark, paths, layer, table, mode="overwrite", merge_keys=None, partition_by=None) -> str
     Returns the Delta LOCATION path string. Never int(write_delta(...)).
     Count rows with spark.table(paths.table(layer, table)).count() after the write.
+    mode is "overwrite", "append", or "merge"; merge also accepts merge_keys=[...].
+
+stage_delta(df, spark, paths, layer, table, mode="overwrite", merge_keys=None, partition_by=None) -> str
+    Builds the complete proposed table at paths.table(layer, table + "__staging") and returns
+    its Delta LOCATION. Validate counts, missing columns, and duplicate groups against that
+    staging table. mode is "overwrite", "append", or "merge"; merge requires merge_keys.
+
+publish_staged(spark, paths, layer, table, partition_by=None) -> str
+    Overwrites the published Delta table from table + "__staging" and returns its LOCATION.
+    Call only after staging validation passes; validation failure must skip this call.
 
 ensure_schema(spark, paths) -> None
     Creates the layer schemas for this output_space, plus de_assist.
     Do not pass a DataFrame.
 
-load_paths(backend, output_space=config["output_space"]) -> RuntimePaths
+load_paths(backend, output_space=config["output_space"], pipeline=config.get("pipeline", "taxi")) -> RuntimePaths
     backend is "adls" or "dbfs".
     output_space is "eval" or "generated" from config_json. The generator is given "generated".
-    paths.raw(*parts) uses the parts the spec declares.
+    paths.raw(*parts) joins under this run's raw root. Discover parts with list_raw_files.
     paths.table(layer, table) resolves Hive for this output_space.
     spark.table(paths.table(layer, table))
     Do not hard-code schema names.
@@ -83,4 +93,4 @@ Order at the top of the notebook:
 
 Count a table before using that count in a later expression.
 Do not wrap the call in if __name__ == "__main__".
-No Python UDF for hashes; use Spark functions from the spec.
+No Python UDF for hashes; use Spark functions.

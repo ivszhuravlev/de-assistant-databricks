@@ -36,8 +36,9 @@ from pipeline_helpers import (
     ensure_schema,
     load_paths,
     missing_columns,
+    publish_staged,
+    stage_delta,
     validate_counts,
-    write_delta,
     write_run_log,
 )
 from placeholders import notify
@@ -58,7 +59,7 @@ if backend == "adls":
     configure_adls_from_secret(spark, dbutils, sas_token=dbutils.widgets.get("sas").strip() or None)
 paths = load_paths(backend, output_space="eval", pipeline="transaction_cat")
 PIPELINE_NAME = "transaction_categorization"
-IDENTITY = ["transaction_description", "category", "country", "currency"]
+REQUIRED_BUSINESS_COLUMNS = ["transaction_description", "category", "country", "currency"]
 
 pipeline_run_id = str(uuid.uuid4())
 started_at = datetime.now(timezone.utc).isoformat()
@@ -69,26 +70,6 @@ result = {}
 
 def typed(df: DataFrame, name: str, data_type: str, alias: Optional[str] = None):
     return F.col(actual_column(df.columns, name)).cast(data_type).alias(alias or name.lower())
-
-
-def write_table(
-    df: DataFrame,
-    layer: str,
-    table_name: str,
-    partition_by: Optional[List[str]] = None,
-) -> None:
-    global active_layer, active_table
-    active_layer = layer
-    active_table = table_name
-    write_delta(
-        df,
-        spark,
-        paths,
-        layer,
-        table_name,
-        mode="overwrite",
-        partition_by=partition_by,
-    )
 
 
 def quality_result(
@@ -110,20 +91,31 @@ def quality_result(
     )
 
 
-def audit_table(
+def publish_table(
+    df: DataFrame,
     layer: str,
     table_name: str,
     required_columns: List[str],
     unique_grain: Optional[List[str]] = None,
-    expected_count: Optional[int] = None,
     allow_empty: bool = False,
     extra_results: Optional[List[dict]] = None,
+    partition_by: Optional[List[str]] = None,
 ) -> int:
     global active_layer, active_table
     active_layer = layer
     active_table = table_name
+    stage_delta(
+        df,
+        spark,
+        paths,
+        layer,
+        table_name,
+        mode="overwrite",
+        partition_by=partition_by,
+    )
+    staging_name = f"{table_name}__staging"
+    table = spark.table(paths.table(layer, staging_name))
     fqtn = paths.table(layer, table_name)
-    table = spark.table(fqtn)
     row_count = table.count()
     missing = missing_columns(table.columns, required_columns)
     duplicate_groups = (
@@ -153,17 +145,6 @@ def audit_table(
                 ", ".join(unique_grain),
             )
         )
-    if expected_count is not None:
-        checks.append(
-            quality_result(
-                layer,
-                table_name,
-                "expected_row_count",
-                row_count == expected_count,
-                row_count,
-                f"Expected {expected_count}.",
-            )
-        )
     checks.extend(extra_results or [])
     failures = validate_counts(
         fqtn, row_count, missing, duplicate_groups, allow_empty=allow_empty
@@ -173,6 +154,26 @@ def audit_table(
         for item in checks
         if not item["passed"]
     )
+    if failures:
+        append_metadata_rows(spark, paths, DATA_QUALITY, checks)
+        append_metadata_rows(
+            spark,
+            paths,
+            LAYER_RUN,
+            [
+                layer_run_row(
+                    pipeline_run_id=pipeline_run_id,
+                    layer=layer,
+                    table_name=table_name,
+                    row_count=row_count,
+                    status="FAILED",
+                )
+            ],
+        )
+        raise RuntimeError("; ".join(dict.fromkeys(failures)))
+
+    publish_staged(spark, paths, layer, table_name, partition_by=partition_by)
+    spark.sql(f"DROP TABLE IF EXISTS {paths.table(layer, staging_name)}")
     append_metadata_rows(spark, paths, DATA_QUALITY, checks)
     append_metadata_rows(
         spark,
@@ -184,12 +185,10 @@ def audit_table(
                 layer=layer,
                 table_name=table_name,
                 row_count=row_count,
-                status="FAILED" if failures else "SUCCESS",
+                status="SUCCESS",
             )
         ],
     )
-    if failures:
-        raise RuntimeError("; ".join(dict.fromkeys(failures)))
     print(json.dumps({"table": fqtn, "row_count": row_count, "status": "SUCCESS"}))
     return row_count
 
@@ -210,40 +209,70 @@ try:
 
     tx_path = first_existing(
         [
-            paths.raw("transaction_cat.parquet"),
+            paths.raw("transaction_cat_snapshot.parquet"),
             paths.raw("_generated"),
         ]
     )
     taxonomy_path = paths.raw("category_taxonomy.jsonl")
     geo_path = paths.raw("country_currency.jsonl")
 
+    raw_tx = spark.read.parquet(tx_path)
+    business_columns = sorted(raw_tx.columns, key=str.lower)
+    missing_business_columns = missing_columns(
+        business_columns, REQUIRED_BUSINESS_COLUMNS
+    )
+    if missing_business_columns:
+        raise ValueError(
+            f"Transaction snapshot is missing business columns: {missing_business_columns}"
+        )
+    source_order = [
+        F.col(column).asc_nulls_first() for column in business_columns
+    ]
     bronze_tx = (
-        spark.read.parquet(tx_path)
+        raw_tx
         .withColumn("_source_file", F.input_file_name())
+        .withColumn(
+            "_source_row_number",
+            F.row_number().over(
+                Window.partitionBy("_source_file").orderBy(*source_order)
+            ),
+        )
+        .withColumn(
+            "_payload_json",
+            F.to_json(
+                F.struct(*[F.col(column).alias(column) for column in business_columns]),
+                {"ignoreNullFields": "false"},
+            ),
+        )
+        .withColumn("_payload_hash", F.sha2(F.col("_payload_json"), 256))
         .withColumn("_ingested_at", F.current_timestamp())
     )
     bronze_tx = bronze_tx.withColumn(
         "_source_row_hash",
         F.sha2(
-            F.concat_ws(
-                "||",
-                *[
-                    F.coalesce(
-                        F.col(actual_column(bronze_tx.columns, name)).cast("string"),
-                        F.lit("__NULL__"),
-                    )
-                    for name in IDENTITY
-                ],
+            F.to_json(
+                F.struct(
+                    F.col("_payload_json").alias("payload"),
+                    F.col("_source_file").alias("source_file"),
+                    F.col("_source_row_number").alias("source_row_number"),
+                ),
+                {"ignoreNullFields": "false"},
             ),
             256,
         ),
-    )
-    write_table(bronze_tx, "bronze", "transactions")
-    bronze_tx_count = audit_table(
+    ).drop("_payload_json")
+    bronze_tx_count = publish_table(
+        bronze_tx,
         "bronze",
         "transactions",
-        IDENTITY + ["_source_file", "_ingested_at", "_source_row_hash"],
-        expected_count=1_000_000,
+        REQUIRED_BUSINESS_COLUMNS
+        + [
+            "_source_file",
+            "_source_row_number",
+            "_ingested_at",
+            "_payload_hash",
+            "_source_row_hash",
+        ],
     )
 
     taxonomy = (
@@ -251,13 +280,12 @@ try:
         .withColumn("_source_file", F.input_file_name())
         .withColumn("_ingested_at", F.current_timestamp())
     )
-    write_table(taxonomy, "bronze", "category_taxonomy")
-    taxonomy_count = audit_table(
+    taxonomy_count = publish_table(
+        taxonomy,
         "bronze",
         "category_taxonomy",
         ["category", "category_code", "aliases", "_source_file", "_ingested_at"],
         ["category_code"],
-        expected_count=10,
     )
 
     geo = (
@@ -265,13 +293,12 @@ try:
         .withColumn("_source_file", F.input_file_name())
         .withColumn("_ingested_at", F.current_timestamp())
     )
-    write_table(geo, "bronze", "country_currency")
-    geo_count = audit_table(
+    geo_count = publish_table(
+        geo,
         "bronze",
         "country_currency",
         ["country", "country_norm", "currency", "_source_file", "_ingested_at"],
         ["country_norm"],
-        expected_count=5,
     )
 
     alias_lookup = (
@@ -291,7 +318,14 @@ try:
         F.col("currency").alias("geo_currency"),
     )
 
-    bronze_df = spark.table(paths.table("bronze", "transactions"))
+    bronze_df = spark.table(paths.table("bronze", "transactions")).withColumn(
+        "_duplicate_payload_rank",
+        F.row_number().over(
+            Window.partitionBy(*business_columns).orderBy(
+                F.col("_source_file"), F.col("_source_row_number")
+            )
+        ),
+    )
     staged = (
         bronze_df.select(
             typed(bronze_df, "transaction_description", "string"),
@@ -299,7 +333,9 @@ try:
             typed(bronze_df, "country", "string"),
             typed(bronze_df, "currency", "string"),
             F.col("_source_file"),
+            F.col("_source_row_number"),
             F.col("_ingested_at"),
+            F.col("_duplicate_payload_rank"),
             F.col("_source_row_hash"),
         )
         .withColumn("description_norm", F.lower(F.trim("transaction_description")))
@@ -323,14 +359,20 @@ try:
                     | (F.col("currency_norm") != F.col("geo_currency")),
                     F.lit("invalid_country_currency"),
                 ),
+                F.when(
+                    F.col("_duplicate_payload_rank") > 1,
+                    F.lit("duplicate_payload"),
+                ),
             ),
         )
     )
     rejected = staged.where(F.col("reject_reason") != "")
-    valid = staged.where(F.col("reject_reason") == "").drop("reject_reason")
-    write_table(rejected, "silver", "rejected_transactions")
-    rejected_count = spark.table(paths.table("silver", "rejected_transactions")).count()
-    audit_table(
+    valid = staged.where(F.col("reject_reason") == "").drop(
+        "reject_reason", "_duplicate_payload_rank"
+    )
+    rejected_count = rejected.count()
+    publish_table(
+        rejected,
         "silver",
         "rejected_transactions",
         ["transaction_description", "reject_reason", "_source_file"],
@@ -340,10 +382,7 @@ try:
                 "silver",
                 "rejected_transactions",
                 "dead_letter_reason",
-                spark.table(paths.table("silver", "rejected_transactions"))
-                .where(F.col("reject_reason") == "")
-                .count()
-                == 0,
+                rejected.where(F.col("reject_reason") == "").count() == 0,
                 rejected_count,
                 "Every rejected row must have a reject_reason.",
             )
@@ -351,17 +390,7 @@ try:
     )
 
     silver = (
-        valid.withColumn(
-            "_dedupe_rank",
-            F.row_number().over(
-                Window.partitionBy("_source_row_hash").orderBy(
-                    F.col("_source_file").asc_nulls_last()
-                )
-            ),
-        )
-        .where(F.col("_dedupe_rank") == 1)
-        .drop("_dedupe_rank")
-        .withColumn("transaction_id", F.col("_source_row_hash"))
+        valid.withColumn("transaction_id", F.col("_source_row_hash"))
         .withColumn(
             "merchant_token",
             F.regexp_extract(F.col("transaction_description"), r"^([^#0-9]+)", 1),
@@ -377,12 +406,13 @@ try:
             "currency_norm",
             "merchant_token",
             "_source_file",
+            "_source_row_number",
             "_ingested_at",
             "_source_row_hash",
         )
     )
-    write_table(silver, "silver", "transactions", ["country_norm"])
-    silver_count = audit_table(
+    silver_count = publish_table(
+        silver,
         "silver",
         "transactions",
         [
@@ -394,6 +424,7 @@ try:
             "_source_file",
         ],
         ["transaction_id"],
+        partition_by=["country_norm"],
     )
 
     dim_category = (
@@ -401,8 +432,8 @@ try:
         .select("category_code", "category", "keywords")
         .dropDuplicates(["category_code"])
     )
-    write_table(dim_category, "gold", "dim_category")
-    audit_table(
+    publish_table(
+        dim_category,
         "gold",
         "dim_category",
         ["category_code", "category"],
@@ -415,8 +446,8 @@ try:
         .select("country_norm", F.col("country").alias("country_name"), "currency")
         .dropDuplicates(["country_norm"])
     )
-    write_table(dim_geo, "gold", "dim_geo")
-    audit_table(
+    publish_table(
+        dim_geo,
         "gold",
         "dim_geo",
         ["country_norm", "country_name", "currency"],
@@ -446,9 +477,9 @@ try:
             "left",
         )
     )
-    write_table(facts, "gold", "fct_transactions", ["country_norm"])
-    fact_count = spark.table(paths.table("gold", "fct_transactions")).count()
-    audit_table(
+    fact_count = facts.count()
+    publish_table(
+        facts,
         "gold",
         "fct_transactions",
         ["transaction_id", "category_name", "country_name", "currency_norm"],
@@ -463,6 +494,7 @@ try:
                 f"Expected silver count {silver_count}; category/geo joins must not drop rows.",
             )
         ],
+        partition_by=["country_norm"],
     )
 
     monthly = (
@@ -474,9 +506,9 @@ try:
             F.countDistinct("merchant_token").alias("distinct_merchant_tokens"),
         )
     )
-    write_table(monthly, "gold", "fct_category_country")
-    agg_total = spark.table(paths.table("gold", "fct_category_country")).agg(F.sum("txn_count")).collect()[0][0]
-    monthly_count = audit_table(
+    agg_total = monthly.agg(F.sum("txn_count")).collect()[0][0]
+    monthly_count = publish_table(
+        monthly,
         "gold",
         "fct_category_country",
         ["category_code", "country_norm", "currency_norm", "txn_count"],

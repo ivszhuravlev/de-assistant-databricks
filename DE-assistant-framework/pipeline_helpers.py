@@ -39,6 +39,15 @@ ADLS_SECRET_KEY = "adls_sas"
 ADLS_LEGACY_SECRET_KEY = "adls-sas"
 DBFS_ROOT = "dbfs:/de-assist-databricks"
 GENERATED_SCHEMA_PREFIX = "gen_"
+# This classic cluster ships with hostile defaults (shuffle 2000, 32 KiB
+# maxPartitionBytes, AQE off, no broadcast). Generated notebooks hang on silver
+# joins unless the session is reset. Eval slices already override shuffle.
+SESSION_SPARK_CONF = {
+    "spark.sql.shuffle.partitions": "64",
+    "spark.sql.files.maxPartitionBytes": "134217728",
+    "spark.sql.adaptive.enabled": "true",
+    "spark.sql.autoBroadcastJoinThreshold": "10485760",
+}
 
 
 @dataclass(frozen=True)
@@ -220,7 +229,16 @@ def load_paths(
     )
 
 
+def configure_session_spark(spark) -> None:
+    """Make a shared classic session usable. Call from ensure_schema and entry notebooks."""
+    if spark is None:
+        return
+    for key, value in SESSION_SPARK_CONF.items():
+        spark.conf.set(key, value)
+
+
 def ensure_schema(spark, paths: RuntimePaths) -> None:
+    configure_session_spark(spark)
     for layer in LAYER_SCHEMAS:
         spark.sql(f"CREATE DATABASE IF NOT EXISTS {paths.layer_schema(layer)}")
     spark.sql(f"CREATE DATABASE IF NOT EXISTS {paths.ops_schema}")
@@ -305,6 +323,73 @@ def write_delta(
             spark.sql(f"DROP TABLE IF EXISTS {fqtn}")
             spark.sql(f"CREATE TABLE {fqtn} USING DELTA LOCATION '{location}'")
     return location
+
+
+def stage_delta(
+    df,
+    spark,
+    paths: RuntimePaths,
+    layer: str,
+    table: str,
+    mode: str = "overwrite",
+    merge_keys: list[str] | None = None,
+    partition_by: list[str] | None = None,
+) -> str:
+    """Build the proposed table state at ``{table}__staging`` without publishing it."""
+    mode = (mode or "overwrite").strip().lower()
+    if mode not in LEGAL_MODES:
+        raise ValueError(f"Unsupported write mode {mode!r}; expected {LEGAL_MODES}")
+
+    staged_table = f"{table}__staging"
+    if mode == "overwrite":
+        candidate = df
+    else:
+        try:
+            current = spark.read.format("delta").load(paths.delta(layer, table))
+        except Exception:
+            current = None
+        if mode == "append":
+            candidate = (
+                current.unionByName(df, allowMissingColumns=True)
+                if current is not None
+                else df
+            )
+        else:
+            candidate = current if current is not None else df.limit(0)
+
+    location = write_delta(
+        candidate,
+        spark,
+        paths,
+        layer,
+        staged_table,
+        mode="overwrite",
+        partition_by=partition_by,
+    )
+    if mode == "merge":
+        _merge_delta(df, spark, location, merge_keys or [])
+        spark.sql(f"REFRESH TABLE {paths.table(layer, staged_table)}")
+    return location
+
+
+def publish_staged(
+    spark,
+    paths: RuntimePaths,
+    layer: str,
+    table: str,
+    partition_by: list[str] | None = None,
+) -> str:
+    """Overwrite the published table from its already-validated staging table."""
+    staged = spark.read.format("delta").load(paths.delta(layer, f"{table}__staging"))
+    return write_delta(
+        staged,
+        spark,
+        paths,
+        layer,
+        table,
+        mode="overwrite",
+        partition_by=partition_by,
+    )
 
 
 def _column_names(columns: Iterable[str]) -> list[str]:

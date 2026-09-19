@@ -107,6 +107,7 @@ resources:
             notebook_path: notebooks/verify_generated_eval.py
             base_parameters:
               repo_root: ${workspace.file_path}
+              pipeline: taxi
 
     inspect_eval_raw:
       name: "[${bundle.target}] Inspect ADLS eval raw prefixes"

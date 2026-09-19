@@ -164,7 +164,7 @@ def test_system_prompt_is_not_the_taxi_eval():
         "Yellow: trip_type",
     )
     assert all(item not in prompt for item in leaked)
-    assert "pipeline_spec" in prompt
+    assert "pipeline_brief" in prompt
 
 
 def test_generator_retries_with_same_conversation(tmp_path, monkeypatch):
@@ -224,13 +224,21 @@ def test_context_tools_are_registered():
         "profile_column",
         "get_distinct_values",
         "peek_table",
+        "list_tables",
+        "ask_clarification",
         "get_last_error",
         "read_log",
         "list_successful_runs",
         "read_tested_pipeline",
+        "spark_ui_applications",
+        "spark_ui_failed_jobs",
         "semantic_search",
         "search_previous_errors",
     } <= names
+    assert "ask_clarification" in names
+    tools = ReadOnlyTools(config(), Path("."))
+    asked = json.loads(tools.call("ask_clarification", {"question": "What is the grain?"}))
+    assert asked["status"] == "unanswered"
 
 
 def test_data_tools_require_spark():
@@ -238,6 +246,8 @@ def test_data_tools_require_spark():
     assert json.loads(tools.call("peek_raw", {"path": "dbfs:/de-assist-databricks/raw/taxi_data/x.csv"}))[
         "error"
     ]
+    assert json.loads(tools.call("spark_ui_applications", {}))["error"]
+    assert json.loads(tools.call("spark_ui_failed_jobs", {}))["error"]
     assert json.loads(tools.call("semantic_search", {"query": "zones"}))["status"] == "parked"
 
 
@@ -415,6 +425,66 @@ def test_validate_rejects_layer_run_rows_on_data_quality():
     assert any("data_quality_row" in error for error in validate_layer(result, "bronze"))
 
 
+def test_validate_rejects_name_guard():
+    result = valid_result()
+    result["artifacts"][0]["content"] = (
+        "# Databricks notebook source\n"
+        "def transform(spark, config: dict) -> None:\n"
+        "    return None\n"
+        "if __name__ != '__main__':\n"
+        "    transform(spark, config)\n"
+    )
+    assert any("__name__" in error for error in validate_layer(result, "bronze"))
+
+
+def test_validate_rejects_write_delta_for_published_table():
+    result = valid_result()
+    result["artifacts"][0]["content"] = (
+        "# Databricks notebook source\n"
+        "def transform(spark, config: dict) -> None:\n"
+        "    write_delta(df, spark, paths, 'bronze', 'yellow_tripdata')\n"
+        "    data_quality_row(pipeline_run_id='p', layer='bronze', "
+        "table_name='yellow_tripdata', check_name='ok', passed=True)\n"
+        "    layer_run_row(pipeline_run_id='p', layer='bronze', "
+        "table_name='yellow_tripdata', row_count=1, status='SUCCESS')\n"
+    )
+    errors = validate_layer(result, "bronze")
+    assert any("write_delta" in error and "publish_staged" in error for error in errors)
+
+
+def test_prompt_forbids_name_guard_and_direct_write_delta():
+    prompt = build_task_prompt("silver")
+    assert "Never mention __name__" in prompt
+    assert "Do not call write_delta for a published table" in prompt
+    assert "unconditionally" in prompt
+
+
+def test_validate_rejects_published_table_without_data_quality_row():
+    result = valid_result()
+    result["artifacts"][0]["content"] = (
+        "# Databricks notebook source\n"
+        "def transform(spark, config: dict) -> None:\n"
+        "    publish_staged(spark, paths, 'bronze', 'yellow_tripdata')\n"
+        "    layer_run_row('p', 'bronze', 'yellow_tripdata', 1, 'SUCCESS')\n"
+    )
+    errors = validate_layer(result, "bronze")
+    assert any("data_quality_row for the same table" in error for error in errors)
+
+
+def test_validate_accepts_metadata_rows_for_published_table():
+    result = valid_result()
+    result["artifacts"][0]["content"] = (
+        "# Databricks notebook source\n"
+        "def transform(spark, config: dict) -> None:\n"
+        "    publish_staged(spark, paths, 'bronze', table='yellow_tripdata')\n"
+        "    data_quality_row('p', 'bronze', table_name='yellow_tripdata', "
+        "check_name='row_count_positive', passed=True)\n"
+        "    layer_run_row('p', 'bronze', table_name='yellow_tripdata', "
+        "row_count=1, status='SUCCESS')\n"
+    )
+    assert validate_layer(result, "bronze") == []
+
+
 def test_validate_rejects_hardcoded_hive_names():
     result = valid_result()
     result["artifacts"][0]["content"] = (
@@ -423,6 +493,44 @@ def test_validate_rejects_hardcoded_hive_names():
         "    spark.table('bronze.yellow_tripdata')\n"
     )
     assert any("hard-code" in error for error in validate_layer(result, "bronze"))
+
+
+def test_validate_rejects_hardcoded_sql_schema_and_prefixed_hive():
+    result = valid_result()
+    result["artifacts"][0]["content"] = (
+        "# Databricks notebook source\n"
+        "def transform(spark, config: dict) -> None:\n"
+        "    spark.sql('SELECT * FROM gold.fct_daily_sales')\n"
+    )
+    errors = validate_layer(result, "bronze")
+    assert any("Hive schema in SQL" in error for error in errors)
+    result["artifacts"][0]["content"] = (
+        "# Databricks notebook source\n"
+        "def transform(spark, config: dict) -> None:\n"
+        "    spark.table('gen_retail_gold.fct_daily_sales')\n"
+    )
+    assert any("hard-code" in error for error in validate_layer(result, "bronze"))
+    result["artifacts"][0]["content"] = (
+        "# Databricks notebook source\n"
+        "def transform(spark, config: dict) -> None:\n"
+        "    spark.sql(f'SELECT * FROM {paths.table(\"gold\", \"fct_daily_sales\")}')\n"
+    )
+    assert not any("Hive schema" in error or "hard-code" in error for error in validate_layer(result, "bronze"))
+
+
+def test_validate_rejects_spark_sql_on_gold():
+    result = valid_result()
+    result["layer"] = "gold"
+    result["artifacts"][0]["path"] = "notebooks/gold.py"
+    result["artifacts"][0]["content"] = (
+        "# Databricks notebook source\n"
+        "def transform(spark, config: dict) -> None:\n"
+        "    spark.sql(f\"SELECT * FROM {paths.table('gold', 'fct_daily_sales')}\")\n"
+        "    append_metadata_rows(spark, paths, PIPELINE_RUN, [pipeline_run_row("
+        "pipeline_run_id=config['pipeline_run_id'], pipeline_name='', status='SUCCESS')])\n"
+    )
+    errors = validate_layer(result, "gold")
+    assert any("must not call spark.sql" in error for error in errors)
 
 
 def test_validate_rejects_hardcoded_output_space_eval():
@@ -530,6 +638,34 @@ def test_notify_is_a_stub():
     notify({"status": "SUCCESS", "pipeline_run_id": "x"})
 
 
+def test_extract_json_keeps_first_complete_object_when_model_appends_more():
+    from llm_agent import _extract_json
+
+    payload = {
+        "layer": "silver",
+        "summary": "ok",
+        "artifacts": [{"path": "notebooks/silver.py", "kind": "databricks_notebook", "content": "# Databricks notebook source\n"}],
+        "assumptions": [],
+    }
+    blob = json.dumps(payload) + "\n" + json.dumps({"note": "trailing"})
+    assert json.loads(_extract_json(blob))["layer"] == "silver"
+
+
+def test_extract_json_prefers_contract_object_after_preamble():
+    from llm_agent import _extract_json
+
+    payload = {
+        "layer": "gold",
+        "summary": "ok",
+        "artifacts": [{"path": "notebooks/gold.py", "kind": "databricks_notebook", "content": "# Databricks notebook source\n"}],
+        "assumptions": ["x"],
+    }
+    blob = json.dumps({"status": "thinking"}) + "\n" + json.dumps(payload)
+    parsed = json.loads(_extract_json(blob))
+    assert parsed["layer"] == "gold"
+    assert parsed["assumptions"] == ["x"]
+
+
 def test_tool_ledger_is_bounded_and_redacts_nothing_but_length():
     from llm_agent import tool_ledger
 
@@ -603,3 +739,94 @@ def test_read_log_uses_attempt_dir_and_drops_generated_code():
     payload = json.loads(tools.call("read_log", {"run_id": "run-9", "layer": "bronze"}))
     assert payload["path"] == attempt
     assert "NOTEBOOK" not in payload["lines"][0]
+
+
+def test_ensure_schema_resets_hostile_session_spark():
+    from pipeline_helpers import SESSION_SPARK_CONF, ensure_schema
+
+    seen = {}
+
+    class Spark:
+        class conf:
+            @staticmethod
+            def set(key, value):
+                seen[key] = value
+
+        @staticmethod
+        def sql(_statement):
+            return None
+
+    ensure_schema(Spark(), load_paths(storage_root="dbfs:/test"))
+    assert seen == SESSION_SPARK_CONF
+
+
+def test_timeout_is_not_retried(tmp_path, monkeypatch):
+    cfg = config()
+    cfg.layers = ["bronze"]
+    cfg.max_attempts = 3
+    cfg.execute_generated = True
+    cfg.temp_existing_cluster_id = "cluster-1"
+    calls = []
+
+    class Tools:
+        @staticmethod
+        def definitions():
+            return []
+
+    class Client:
+        workspace = object()
+
+        def complete(self, messages, _tools):
+            calls.append(list(messages))
+            return {"role": "assistant", "content": json.dumps(valid_result())}
+
+    monkeypatch.setattr(orchestrator, "DatabricksChatClient", lambda _endpoint: Client())
+    monkeypatch.setattr(
+        orchestrator, "make_tools", lambda *_args: (Tools(), load_paths(storage_root="dbfs:/test"))
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "execute_with_temp_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TimeoutError("Temporary job exceeded 1800 seconds")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="TimeoutError"):
+        orchestrator.run_generator(cfg, tmp_path)
+    assert len(calls) == 1
+
+
+def test_canceled_execute_is_not_retried(tmp_path, monkeypatch):
+    cfg = config()
+    cfg.layers = ["bronze"]
+    cfg.max_attempts = 3
+    cfg.execute_generated = True
+    cfg.temp_existing_cluster_id = "cluster-1"
+    calls = []
+
+    class Tools:
+        @staticmethod
+        def definitions():
+            return []
+
+    class Client:
+        workspace = object()
+
+        def complete(self, messages, _tools):
+            calls.append(1)
+            return {"role": "assistant", "content": json.dumps(valid_result())}
+
+    monkeypatch.setattr(orchestrator, "DatabricksChatClient", lambda _endpoint: Client())
+    monkeypatch.setattr(
+        orchestrator, "make_tools", lambda *_args: (Tools(), load_paths(storage_root="dbfs:/test"))
+    )
+
+    def canceled(*_args, **_kwargs):
+        raise RuntimeError("Temporary job ended as TERMINATED/CANCELED")
+
+    monkeypatch.setattr(orchestrator, "execute_with_temp_job", canceled)
+
+    with pytest.raises(RuntimeError, match="CANCELED"):
+        orchestrator.run_generator(cfg, tmp_path)
+    assert len(calls) == 1

@@ -12,8 +12,11 @@ databricks bundle run load_eval_raw -t dev
 databricks bundle run transaction_cat_vertical_slice -t dev
 ```
 
-Raw: `abfss://raw@exampleaccount.dfs.core.windows.net/transaction_cat/`
-(`transaction_cat.parquet`, `category_taxonomy.jsonl`, `country_currency.jsonl`).
+Raw: the configured ADLS container under `transaction_cat/`.
+The eval input is the named 1M `transaction_cat_snapshot.parquet`; the optional
+`transaction_cat.parquet` is the separately retained Hugging Face source for
+attribution. The lookups are `category_taxonomy.jsonl` and
+`country_currency.jsonl`.
 
 Taxi `bronze` / `silver` / `gold` stay untouched.
 
@@ -28,7 +31,7 @@ Taxi `bronze` / `silver` / `gold` stay untouched.
 
 ## Pass
 
-Exact bronze counts live in `score.py` (1,000,000 / 10 / 5 on the landed fallback).
+Exact bronze counts live in `score.py` (1,000,000 / 10 / 5 for the eval snapshot and lookups).
 
 1. Taxonomy = 10, country/currency = 5, transactions = 1,000,000
 2. `tx_silver.transactions` unique on `transaction_id`

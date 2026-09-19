@@ -14,7 +14,7 @@ databricks bundle run load_eval_raw -t dev
 databricks bundle run fresh_retail_vertical_slice -t dev
 ```
 
-Raw: `abfss://raw@exampleaccount.dfs.core.windows.net/fresh_reatail_net/` (`train.parquet`, `eval.parquet`).
+Raw: the configured ADLS container under `fresh_reatail_net/` (`train.parquet`, `eval.parquet`). The runtime's existing storage identity is reused.
 
 Taxi `bronze` / `silver` / `gold` stay untouched.
 
@@ -33,8 +33,9 @@ Exact bronze counts live in `score.py` (Hub: train 4,500,000, eval 350,000).
 
 1. Both bronze splits land
 2. `retail_silver.daily_sales` unique on `(store_id, product_id, sale_date, _split)`
-3. Rejected rows all have `reject_reason`
-4. `retail_gold.fct_daily_sales` count equals `retail_silver.daily_sales`
-5. Store-daily and category-daily marts reconcile `sum(sale_amount)` to the fact
-6. A second overwrite does not grow those counts
-7. Taxi `bronze.yellow_tripdata` is still 1,369,765
+3. Invalid and duplicate-grain rows are dead-lettered with `reject_reason`
+4. Store and product dimensions are unique by their key plus `_split`, with attributes from the latest sale day in that split
+5. `retail_gold.fct_daily_sales` joins dimensions by key plus `_split` and keeps the silver row count
+6. Store-daily and category-daily marts reconcile `sum(sale_amount)` to the fact
+7. A second overwrite does not grow those counts
+8. Taxi `bronze.yellow_tripdata` is still 1,369,765

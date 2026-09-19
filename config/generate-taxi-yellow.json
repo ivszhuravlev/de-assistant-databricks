@@ -1,10 +1,10 @@
 {
-  "project_name": "nyc_taxi_january_2021",
+  "project_name": "nyc_taxi_january_2021_yellow",
   "model_endpoint": "databricks-claude-haiku-4-5",
   "layers": ["bronze", "silver", "gold"],
   "input_root": "spec",
   "contract_file": "contracts/layer_output.schema.json",
-  "output_root": "generated",
+  "output_root": "generated/taxi_yellow",
   "workspace_root": "",
   "metadata_path": "dbfs:/de-assist-databricks/metadata/generator_runs",
   "error_log_path": "dbfs:/de-assist-databricks/delta/de_assist/run_errors",
@@ -14,10 +14,11 @@
   "temp_existing_cluster_id": "",
   "max_tool_rounds": 16,
   "max_attempts": 3,
+  "pipeline": "taxi",
   "source_map": [
     {
       "id": "pipeline_brief",
-      "path": "pipeline-brief.md",
+      "path": "variant-brief.md",
       "description": "User idea of how this pipeline should work"
     },
     {

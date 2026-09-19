@@ -68,7 +68,7 @@ def run_tool(name, arguments, parked_is_ok=False):
 
 
 run_tool("list_sources", {})
-run_tool("read_source", {"source_id": "pipeline_spec"})
+run_tool("read_source", {"source_id": "pipeline_brief"})
 run_tool("read_contract", {})
 run_tool("list_raw_files", {})
 

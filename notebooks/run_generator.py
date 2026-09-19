@@ -21,7 +21,7 @@ sys.path.insert(0, str(repo_root_hint / "DE-assistant-framework"))
 
 from config import GeneratorConfig
 from orchestrator import run_generator
-from pipeline_helpers import configure_adls_from_secret
+from pipeline_helpers import configure_adls_from_secret, configure_session_spark
 from workspace_paths import default_repo_root
 
 repo_root = Path(default_repo_root(dbutils))
@@ -32,6 +32,7 @@ if workspace_root:
 cluster_id = dbutils.widgets.get("cluster_id").strip()
 if cluster_id:
     config.temp_existing_cluster_id = cluster_id
+configure_session_spark(spark)
 if (config.raw_backend or "adls") == "adls":
     configure_adls_from_secret(spark, dbutils, sas_token=dbutils.widgets.get("sas").strip() or None)
 outcomes = run_generator(config, repo_root, spark=spark)

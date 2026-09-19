@@ -39,3 +39,7 @@ databricks bundle run verify_generated -t dev
 ```
 
 Eval procedures: [`evals/README.md`](evals/README.md).
+
+For `transaction_cat`, the eval contract is the named 1M
+`transaction_cat_snapshot.parquet`. The separately landed Hugging Face
+`transaction_cat.parquet` is retained for source attribution and is not the eval input.

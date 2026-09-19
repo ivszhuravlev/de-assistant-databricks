@@ -10,7 +10,7 @@ from evals.transaction_cat.score import collect_failures as tx_failures
 from evals.transaction_cat.score import expected_match as tx_match
 
 ROOT = Path(__file__).resolve().parents[1]
-REQUIRED = ("README.md", "spec.json", "score.py", "slice.py")
+REQUIRED = ("README.md", "brief.md", "spec.json", "score.py", "slice.py")
 
 
 def test_three_eval_packages_are_homogeneous():

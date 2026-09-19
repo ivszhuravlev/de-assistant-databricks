@@ -10,11 +10,7 @@ Three operator benchmarks. They sit outside `DE-assistant-framework/`. The gener
 
 Each package has the same files:
 
-- `README.md` — how to run and what pass means
-- `spec.json` — pipeline contract for that eval
-- `score.py` — expected counts and fail reasons
-- `slice.py` — hand-built notebook
+- `brief.md` — what a DE would write before building (idea, not the finished job)
+- `README.md` / `score.py` / `slice.py` / `spec.json` — operator-only. The generator does not read them.
 
-Shared ops stay `de_assist.*`. Taxi tables stay put when the other two run.
-
-`spec/helpers-api.txt` is generic harness API, not an eval. The live taxi generate still reads `spec/pipeline-spec.json` (copy of `evals/taxi/spec.json`).
+`spec/pipeline-brief.md` is the taxi brief the live generator reads. `spec/helpers-api.txt` is the platform helper contract.

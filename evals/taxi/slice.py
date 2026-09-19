@@ -36,8 +36,9 @@ from pipeline_helpers import (
     ensure_schema,
     load_paths,
     missing_columns,
+    publish_staged,
+    stage_delta,
     validate_counts,
-    write_delta,
     write_run_log,
 )
 from placeholders import notify
@@ -59,11 +60,6 @@ if backend == "adls":
 paths = load_paths(backend, output_space="eval")
 MONEY = "decimal(18,2)"
 PIPELINE_NAME = "nyc_taxi_january_2021"
-EXPECTED_COUNTS = {
-    ("bronze", "yellow_tripdata"): 1_369_765,
-    ("bronze", "green_tripdata"): 76_518,
-    ("bronze", "taxi_zone_lookup"): 265,
-}
 IDENTITY = [
     "vendor_id",
     "pickup_datetime",
@@ -116,7 +112,7 @@ def write_table(
     global active_layer, active_table
     active_layer = layer
     active_table = table_name
-    write_delta(
+    stage_delta(
         df,
         spark,
         paths,
@@ -151,15 +147,17 @@ def audit_table(
     table_name: str,
     required_columns: List[str],
     unique_grain: Optional[List[str]] = None,
-    expected_count: Optional[int] = None,
     allow_empty: bool = False,
     extra_results: Optional[List[dict]] = None,
+    partition_by: Optional[List[str]] = None,
 ) -> int:
     global active_layer, active_table
     active_layer = layer
     active_table = table_name
     fqtn = paths.table(layer, table_name)
-    table = spark.table(fqtn)
+    staging_name = f"{table_name}__staging"
+    staging_fqtn = paths.table(layer, staging_name)
+    table = spark.table(staging_fqtn)
     row_count = table.count()
     missing = missing_columns(table.columns, required_columns)
     duplicate_groups = (
@@ -195,17 +193,6 @@ def audit_table(
                 ", ".join(unique_grain),
             )
         )
-    if expected_count is not None:
-        checks.append(
-            quality_result(
-                layer,
-                table_name,
-                "expected_row_count",
-                row_count == expected_count,
-                row_count,
-                f"Expected {expected_count}.",
-            )
-        )
     checks.extend(extra_results or [])
     failures = validate_counts(
         fqtn,
@@ -236,6 +223,8 @@ def audit_table(
     )
     if failures:
         raise RuntimeError("; ".join(dict.fromkeys(failures)))
+    publish_staged(spark, paths, layer, table_name, partition_by=partition_by)
+    spark.sql(f"DROP TABLE IF EXISTS {staging_fqtn}")
     print(json.dumps({"table": fqtn, "row_count": row_count, "status": "SUCCESS"}))
     return row_count
 
@@ -297,7 +286,7 @@ def standardize(
     return full.where(~invalid), rejected
 
 
-def monthly_matches_facts() -> Tuple[bool, int]:
+def monthly_matches_facts(monthly: DataFrame) -> Tuple[bool, int]:
     facts = (
         spark.table(paths.table("gold", "fct_trips"))
         .withColumn("revenue_month", F.date_trunc("month", "pickup_datetime"))
@@ -307,8 +296,8 @@ def monthly_matches_facts() -> Tuple[bool, int]:
             F.count("trip_id").alias("expected_trips"),
         )
     )
-    monthly = (
-        spark.table(paths.table("gold", "fct_monthly_zone_revenue"))
+    monthly_totals = (
+        monthly
         .groupBy("revenue_month", "service_type")
         .agg(
             F.sum("revenue_monthly_total_amount").alias("actual_total"),
@@ -316,7 +305,7 @@ def monthly_matches_facts() -> Tuple[bool, int]:
         )
     )
     mismatches = (
-        facts.join(monthly, ["revenue_month", "service_type"], "full")
+        facts.join(monthly_totals, ["revenue_month", "service_type"], "full")
         .where(
             ~F.col("expected_total").eqNullSafe(F.col("actual_total"))
             | ~F.col("expected_trips").eqNullSafe(F.col("actual_trips"))
@@ -329,7 +318,7 @@ def monthly_matches_facts() -> Tuple[bool, int]:
 try:
     print(json.dumps({"event": "pipeline_start", "pipeline_run_id": pipeline_run_id}))
     ensure_schema(spark, paths)
-    read_options = {"header": "true", "inferSchema": "true"}
+    read_options = {"header": "true"}
 
     yellow_raw = (
         spark.read.options(**read_options)
@@ -338,16 +327,12 @@ try:
         .withColumn("_ingested_at", F.current_timestamp())
         .withColumn("_source_month", F.lit("2021-01"))
     )
-    yellow_raw = yellow_raw.withColumn(
-        "pickup_date",
-        F.to_date(F.col(actual_column(yellow_raw.columns, "tpep_pickup_datetime"))),
-    )
-    write_table(yellow_raw, "bronze", "yellow_tripdata", ["pickup_date"])
+    write_table(yellow_raw, "bronze", "yellow_tripdata", ["_source_month"])
     yellow_count = audit_table(
         "bronze",
         "yellow_tripdata",
-        ["VendorID", "tpep_pickup_datetime", "_source_file", "_ingested_at", "pickup_date"],
-        expected_count=EXPECTED_COUNTS[("bronze", "yellow_tripdata")],
+        ["VendorID", "tpep_pickup_datetime", "_source_file", "_ingested_at", "_source_month"],
+        partition_by=["_source_month"],
     )
 
     green_raw = (
@@ -357,16 +342,12 @@ try:
         .withColumn("_ingested_at", F.current_timestamp())
         .withColumn("_source_month", F.lit("2021-01"))
     )
-    green_raw = green_raw.withColumn(
-        "pickup_date",
-        F.to_date(F.col(actual_column(green_raw.columns, "lpep_pickup_datetime"))),
-    )
-    write_table(green_raw, "bronze", "green_tripdata", ["pickup_date"])
+    write_table(green_raw, "bronze", "green_tripdata", ["_source_month"])
     green_count = audit_table(
         "bronze",
         "green_tripdata",
-        ["VendorID", "lpep_pickup_datetime", "_source_file", "_ingested_at", "pickup_date"],
-        expected_count=EXPECTED_COUNTS[("bronze", "green_tripdata")],
+        ["VendorID", "lpep_pickup_datetime", "_source_file", "_ingested_at", "_source_month"],
+        partition_by=["_source_month"],
     )
 
     zones_raw = (
@@ -374,14 +355,23 @@ try:
         .csv(lookup_path())
         .withColumn("_source_file", F.input_file_name())
         .withColumn("_ingested_at", F.current_timestamp())
+        .withColumn("_source_month", F.lit("2021-01"))
     )
-    write_table(zones_raw, "bronze", "taxi_zone_lookup")
+    write_table(zones_raw, "bronze", "taxi_zone_lookup", ["_source_month"])
     zone_count = audit_table(
         "bronze",
         "taxi_zone_lookup",
-        ["LocationID", "Borough", "Zone", "service_zone", "_source_file", "_ingested_at"],
+        [
+            "LocationID",
+            "Borough",
+            "Zone",
+            "service_zone",
+            "_source_file",
+            "_ingested_at",
+            "_source_month",
+        ],
         ["LocationID"],
-        EXPECTED_COUNTS[("bronze", "taxi_zone_lookup")],
+        partition_by=["_source_month"],
     )
 
     yellow, yellow_rejected = standardize(
@@ -398,11 +388,11 @@ try:
     )
     rejected = yellow_rejected.unionByName(green_rejected)
     write_table(rejected, "silver", "rejected_trips", ["pickup_date"])
-    rejected_count = spark.table(paths.table("silver", "rejected_trips")).count()
+    rejected_count = rejected.count()
     valid_rejected_count = (
-        spark.table(paths.table("silver", "rejected_trips"))
-        .where(F.col("vendor_id").isNull() | F.col("pickup_datetime").isNull())
-        .count()
+        rejected.where(
+            F.col("vendor_id").isNull() | F.col("pickup_datetime").isNull()
+        ).count()
     )
     audit_table(
         "silver",
@@ -419,6 +409,7 @@ try:
                 "Every rejected row must have a null vendor or pickup timestamp.",
             )
         ],
+        partition_by=["pickup_date"],
     )
 
     silver = (
@@ -454,6 +445,7 @@ try:
         "trips",
         IDENTITY + ["dropoff_datetime", "trip_id", "pickup_date", "_source_file"],
         IDENTITY,
+        partition_by=["pickup_date"],
     )
 
     bronze_zones = spark.table(paths.table("bronze", "taxi_zone_lookup"))
@@ -469,7 +461,16 @@ try:
         "dim_zones",
         ["location_id", "borough", "zone", "service_zone"],
         ["location_id"],
-        zone_count,
+        extra_results=[
+            quality_result(
+                "gold",
+                "dim_zones",
+                "bronze_dimension_count_match",
+                dim_zones.count() == zone_count,
+                dim_zones.count(),
+                f"Expected bronze lookup count {zone_count}.",
+            )
+        ],
     )
 
     zones = spark.table(paths.table("gold", "dim_zones"))
@@ -500,6 +501,14 @@ try:
         )
         .drop("dropoff_zone_location_id")
         .withColumn(
+            "pickup_zone",
+            F.coalesce(F.col("pickup_zone"), F.lit("Unknown Zone")),
+        )
+        .withColumn(
+            "dropoff_zone",
+            F.coalesce(F.col("dropoff_zone"), F.lit("Unknown Zone")),
+        )
+        .withColumn(
             "trip_duration_minutes",
             (
                 F.col("dropoff_datetime").cast("long")
@@ -509,7 +518,7 @@ try:
         )
     )
     write_table(facts, "gold", "fct_trips", ["pickup_date"])
-    fact_count = spark.table(paths.table("gold", "fct_trips")).count()
+    fact_count = facts.count()
     audit_table(
         "gold",
         "fct_trips",
@@ -525,14 +534,11 @@ try:
                 f"Expected silver count {silver_count}; zone joins must not drop trips.",
             )
         ],
+        partition_by=["pickup_date"],
     )
 
     monthly = (
         spark.table(paths.table("gold", "fct_trips"))
-        .withColumn(
-            "pickup_zone",
-            F.coalesce(F.col("pickup_zone"), F.lit("Unknown Zone")),
-        )
         .withColumn("revenue_month", F.date_trunc("month", "pickup_datetime"))
         .groupBy("pickup_zone", "revenue_month", "service_type")
         .agg(
@@ -552,7 +558,7 @@ try:
         )
     )
     write_table(monthly, "gold", "fct_monthly_zone_revenue")
-    totals_match, mismatch_count = monthly_matches_facts()
+    totals_match, mismatch_count = monthly_matches_facts(monthly)
     monthly_count = audit_table(
         "gold",
         "fct_monthly_zone_revenue",

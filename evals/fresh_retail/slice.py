@@ -36,8 +36,9 @@ from pipeline_helpers import (
     ensure_schema,
     load_paths,
     missing_columns,
+    publish_staged,
+    stage_delta,
     validate_counts,
-    write_delta,
     write_run_log,
 )
 from placeholders import notify
@@ -84,6 +85,7 @@ started_at = datetime.now(timezone.utc).isoformat()
 active_layer = ""
 active_table = ""
 result = {}
+_stage_partitions: dict = {}
 
 
 def typed(df: DataFrame, name: str, data_type: str, alias: Optional[str] = None):
@@ -99,13 +101,12 @@ def write_table(
     global active_layer, active_table
     active_layer = layer
     active_table = table_name
-    # One shuffle partition per write, then partitionBy → one file per date.
-    # Source parquet has thousands of row groups; partitionBy alone explodes files.
     if partition_by:
-        df = df.repartition(1, *partition_by)
+        df = df.repartition(4, *partition_by)
     else:
         df = df.coalesce(8)
-    write_delta(
+    _stage_partitions[(layer, table_name)] = partition_by
+    stage_delta(
         df,
         spark,
         paths,
@@ -114,6 +115,10 @@ def write_table(
         mode="overwrite",
         partition_by=partition_by,
     )
+
+
+def staged_table(layer: str, table_name: str) -> DataFrame:
+    return spark.table(paths.table(layer, f"{table_name}__staging"))
 
 
 def quality_result(
@@ -140,7 +145,6 @@ def audit_table(
     table_name: str,
     required_columns: List[str],
     unique_grain: Optional[List[str]] = None,
-    expected_count: Optional[int] = None,
     allow_empty: bool = False,
     extra_results: Optional[List[dict]] = None,
 ) -> int:
@@ -148,7 +152,7 @@ def audit_table(
     active_layer = layer
     active_table = table_name
     fqtn = paths.table(layer, table_name)
-    table = spark.table(fqtn)
+    table = staged_table(layer, table_name)
     row_count = table.count()
     missing = missing_columns(table.columns, required_columns)
     duplicate_groups = (
@@ -178,17 +182,6 @@ def audit_table(
                 ", ".join(unique_grain),
             )
         )
-    if expected_count is not None:
-        checks.append(
-            quality_result(
-                layer,
-                table_name,
-                "expected_row_count",
-                row_count == expected_count,
-                row_count,
-                f"Expected {expected_count}.",
-            )
-        )
     checks.extend(extra_results or [])
     failures = validate_counts(
         fqtn, row_count, missing, duplicate_groups, allow_empty=allow_empty
@@ -198,6 +191,32 @@ def audit_table(
         for item in checks
         if not item["passed"]
     )
+    if failures:
+        append_metadata_rows(spark, paths, DATA_QUALITY, checks)
+        append_metadata_rows(
+            spark,
+            paths,
+            LAYER_RUN,
+            [
+                layer_run_row(
+                    pipeline_run_id=pipeline_run_id,
+                    layer=layer,
+                    table_name=table_name,
+                    row_count=row_count,
+                    status="FAILED",
+                )
+            ],
+        )
+        raise RuntimeError("; ".join(dict.fromkeys(failures)))
+
+    publish_staged(
+        spark,
+        paths,
+        layer,
+        table_name,
+        partition_by=_stage_partitions.pop((layer, table_name), None),
+    )
+    spark.sql(f"DROP TABLE IF EXISTS {paths.table(layer, table_name + '__staging')}")
     append_metadata_rows(spark, paths, DATA_QUALITY, checks)
     append_metadata_rows(
         spark,
@@ -209,12 +228,10 @@ def audit_table(
                 layer=layer,
                 table_name=table_name,
                 row_count=row_count,
-                status="FAILED" if failures else "SUCCESS",
+                status="SUCCESS",
             )
         ],
     )
-    if failures:
-        raise RuntimeError("; ".join(dict.fromkeys(failures)))
     print(json.dumps({"table": fqtn, "row_count": row_count, "status": "SUCCESS"}))
     return row_count
 
@@ -296,7 +313,6 @@ try:
         "bronze",
         "daily_sales_train",
         REQUIRED_SOURCE + ["_source_file", "_ingested_at", "sale_date", "_split"],
-        expected_count=4_500_000,
     )
 
     eval_raw = bronze_sales(eval_path, "eval")
@@ -305,7 +321,6 @@ try:
         "bronze",
         "daily_sales_eval",
         REQUIRED_SOURCE + ["_source_file", "_ingested_at", "sale_date", "_split"],
-        expected_count=350_000,
     )
 
     combined = standardize(
@@ -320,7 +335,7 @@ try:
         | F.col("sale_amount").isNull()
         | (F.col("sale_amount") < 0)
     )
-    rejected = combined.where(invalid).withColumn(
+    invalid_rejected = combined.where(invalid).withColumn(
         "reject_reason",
         F.concat_ws(
             "|",
@@ -333,8 +348,32 @@ try:
             ),
         ),
     )
+    valid_candidates = combined.where(~invalid)
+    stable_tie_break = [
+        F.col("_source_file").asc_nulls_last(),
+        *[
+            F.col(column).asc_nulls_last()
+            for column in sorted(
+                set(valid_candidates.columns)
+                - set(IDENTITY)
+                - {"_source_file", "_ingested_at", "_split"}
+            )
+        ],
+    ]
+    ranked = valid_candidates.withColumn(
+        "_dedupe_rank",
+        F.row_number().over(
+            Window.partitionBy(*IDENTITY, "_split").orderBy(*stable_tie_break)
+        ),
+    )
+    duplicate_rejected = (
+        ranked.where(F.col("_dedupe_rank") > 1)
+        .drop("_dedupe_rank")
+        .withColumn("reject_reason", F.lit("duplicate_grain"))
+    )
+    rejected = invalid_rejected.unionByName(duplicate_rejected)
     write_table(rejected, "silver", "rejected_sales", ["sale_date"])
-    rejected_count = spark.table(paths.table("silver", "rejected_sales")).count()
+    rejected_count = staged_table("silver", "rejected_sales").count()
     audit_table(
         "silver",
         "rejected_sales",
@@ -345,8 +384,11 @@ try:
                 "silver",
                 "rejected_sales",
                 "dead_letter_reason",
-                spark.table(paths.table("silver", "rejected_sales"))
-                .where(F.col("reject_reason") == "")
+                staged_table("silver", "rejected_sales")
+                .where(
+                    F.col("reject_reason").isNull()
+                    | (F.trim(F.col("reject_reason")) == "")
+                )
                 .count()
                 == 0,
                 rejected_count,
@@ -355,14 +397,7 @@ try:
         ],
     )
 
-    valid = combined.where(~invalid).withColumn(
-        "_dedupe_rank",
-        F.row_number().over(
-            Window.partitionBy(*IDENTITY, "_split").orderBy(
-                F.col("_source_file").asc_nulls_last()
-            )
-        ),
-    ).where(F.col("_dedupe_rank") == 1).drop("_dedupe_rank")
+    valid = ranked.where(F.col("_dedupe_rank") == 1).drop("_dedupe_rank")
     valid = valid.withColumn(
         "sales_id",
         F.sha2(
@@ -377,61 +412,96 @@ try:
         ),
     )
     write_table(valid, "silver", "daily_sales", ["sale_date"])
+    staged_silver_count = staged_table("silver", "daily_sales").count()
     silver_count = audit_table(
         "silver",
         "daily_sales",
         IDENTITY + ["sales_id", "sale_amount", "city_id", "first_category_id", "_split"],
         IDENTITY + ["_split"],
+        extra_results=[
+            quality_result(
+                "silver",
+                "daily_sales",
+                "source_rows_accounted_for",
+                staged_silver_count + rejected_count == train_count + eval_count,
+                staged_silver_count + rejected_count,
+                (
+                    "Every bronze row must land in daily_sales or rejected_sales "
+                    f"({train_count + eval_count} source rows)."
+                ),
+            )
+        ],
     )
 
+    store_latest = Window.partitionBy("store_id", "_split").orderBy(
+        F.col("sale_date").desc_nulls_last(),
+        F.col("_source_file").asc_nulls_last(),
+        F.col("city_id").asc_nulls_last(),
+        F.col("management_group_id").asc_nulls_last(),
+    )
     dim_store = (
         spark.table(paths.table("silver", "daily_sales"))
-        .groupBy("store_id")
-        .agg(
-            F.max("city_id").alias("city_id"),
-            F.max("management_group_id").alias("management_group_id"),
-        )
+        .withColumn("_dimension_rank", F.row_number().over(store_latest))
+        .where(F.col("_dimension_rank") == 1)
+        .select("store_id", "_split", "city_id", "management_group_id")
     )
     write_table(dim_store, "silver", "dim_store")
     store_count = audit_table(
         "silver",
         "dim_store",
-        ["store_id", "city_id", "management_group_id"],
-        ["store_id"],
+        ["store_id", "_split", "city_id", "management_group_id"],
+        ["store_id", "_split"],
     )
 
+    product_latest = Window.partitionBy("product_id", "_split").orderBy(
+        F.col("sale_date").desc_nulls_last(),
+        F.col("_source_file").asc_nulls_last(),
+        F.col("first_category_id").asc_nulls_last(),
+        F.col("second_category_id").asc_nulls_last(),
+        F.col("third_category_id").asc_nulls_last(),
+        F.col("management_group_id").asc_nulls_last(),
+    )
     dim_product = (
         spark.table(paths.table("silver", "daily_sales"))
-        .groupBy("product_id")
-        .agg(
-            F.max("first_category_id").alias("first_category_id"),
-            F.max("second_category_id").alias("second_category_id"),
-            F.max("third_category_id").alias("third_category_id"),
-            F.max("management_group_id").alias("management_group_id"),
+        .withColumn("_dimension_rank", F.row_number().over(product_latest))
+        .where(F.col("_dimension_rank") == 1)
+        .select(
+            "product_id",
+            "_split",
+            "first_category_id",
+            "second_category_id",
+            "third_category_id",
+            "management_group_id",
         )
     )
     write_table(dim_product, "silver", "dim_product")
     product_count = audit_table(
         "silver",
         "dim_product",
-        ["product_id", "first_category_id", "second_category_id", "third_category_id"],
-        ["product_id"],
+        [
+            "product_id",
+            "_split",
+            "first_category_id",
+            "second_category_id",
+            "third_category_id",
+        ],
+        ["product_id", "_split"],
     )
 
     write_table(spark.table(paths.table("silver", "dim_store")), "gold", "dim_store")
     audit_table(
         "gold",
         "dim_store",
-        ["store_id", "city_id", "management_group_id"],
-        ["store_id"],
+        ["store_id", "_split", "city_id", "management_group_id"],
+        ["store_id", "_split"],
         store_count,
     )
     write_table(spark.table(paths.table("silver", "dim_product")), "gold", "dim_product")
     audit_table(
         "gold",
         "dim_product",
-        ["product_id", "first_category_id"],
-        ["product_id"],
+        ["product_id", "_split", "first_category_id"],
+        ["product_id", "_split"],
         product_count,
     )
 
@@ -440,27 +510,31 @@ try:
         .join(
             spark.table(paths.table("gold", "dim_store")).select(
                 F.col("store_id").alias("dim_store_id"),
+                F.col("_split").alias("dim_store_split"),
                 F.col("city_id").alias("store_city_id"),
                 F.col("management_group_id").alias("store_management_group_id"),
             ),
-            F.col("store_id") == F.col("dim_store_id"),
+            (F.col("store_id") == F.col("dim_store_id"))
+            & (F.col("_split") == F.col("dim_store_split")),
             "left",
         )
-        .drop("dim_store_id")
+        .drop("dim_store_id", "dim_store_split")
         .join(
             spark.table(paths.table("gold", "dim_product")).select(
                 F.col("product_id").alias("dim_product_id"),
+                F.col("_split").alias("dim_product_split"),
                 F.col("first_category_id").alias("product_first_category_id"),
                 F.col("second_category_id").alias("product_second_category_id"),
                 F.col("third_category_id").alias("product_third_category_id"),
             ),
-            F.col("product_id") == F.col("dim_product_id"),
+            (F.col("product_id") == F.col("dim_product_id"))
+            & (F.col("_split") == F.col("dim_product_split")),
             "left",
         )
-        .drop("dim_product_id")
+        .drop("dim_product_id", "dim_product_split")
     )
     write_table(facts, "gold", "fct_daily_sales", ["sale_date"])
-    fact_count = spark.table(paths.table("gold", "fct_daily_sales")).count()
+    fact_count = staged_table("gold", "fct_daily_sales").count()
     audit_table(
         "gold",
         "fct_daily_sales",
@@ -493,7 +567,7 @@ try:
     )
     write_table(store_daily, "gold", "fct_store_daily", ["sale_date"])
     store_daily_total = (
-        spark.table(paths.table("gold", "fct_store_daily"))
+        staged_table("gold", "fct_store_daily")
         .agg(F.sum("store_sale_amount"))
         .collect()[0][0]
     )
@@ -536,7 +610,7 @@ try:
     )
     write_table(category_daily, "gold", "fct_category_daily", ["sale_date"])
     category_total = (
-        spark.table(paths.table("gold", "fct_category_daily"))
+        staged_table("gold", "fct_category_daily")
         .agg(F.sum("category_sale_amount"))
         .collect()[0][0]
     )

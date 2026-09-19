@@ -22,10 +22,10 @@ EXPECTED_COUNTS = {
 TABLES = tables_from_counts(EXPECTED_COUNTS) + (
     ("silver", "daily_sales"),
     ("silver", "rejected_sales"),
-    ("silver", "dim_store"),
-    ("silver", "dim_product"),
-    ("gold", "dim_store"),
-    ("gold", "dim_product"),
+    ("silver", "dim_store"),  # (store_id, _split)
+    ("silver", "dim_product"),  # (product_id, _split)
+    ("gold", "dim_store"),  # (store_id, _split)
+    ("gold", "dim_product"),  # (product_id, _split)
     ("gold", "fct_daily_sales"),
     ("gold", "fct_store_daily"),
     ("gold", "fct_category_daily"),

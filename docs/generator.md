@@ -25,8 +25,8 @@ For local E2E execution, copy `config/cluster-e2e.json.example` to the ignored
 `config/cluster-e2e.json`, then set `DE_ASSIST_WORKSPACE_ROOT` and `DE_ASSIST_CLUSTER_ID`.
 
 The prompt has one source of truth: `DE-assistant-framework/prompts.py`. It is the generic
-harness contract. Pipeline facts come from `spec/pipeline-spec.json`. No secondary prompt
-copy is maintained.
+harness contract. How this pipeline should work comes from `spec/pipeline-brief.md`.
+The operator eval (`evals/*/score.py`, `slice.py`, `spec.json`) is not model input.
 
 ## Run the generator
 

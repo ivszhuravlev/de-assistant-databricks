@@ -98,12 +98,36 @@ def _clip(value: Any, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+_CONTRACT_KEYS = {"layer", "summary", "artifacts", "assumptions"}
+
+
 def _extract_json(content: str) -> str:
+    """Return one JSON object. Haiku often emits a valid object plus trailing JSON."""
     text = content.strip()
     if text.startswith("```"):
         lines = text.splitlines()
-        text = "\n".join(lines[1:-1])
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError("Model response did not contain a JSON object")
-    return text[start : end + 1]
+        lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines)
+    decoder = json.JSONDecoder()
+    idx = 0
+    fallback: dict[str, Any] | None = None
+    while idx < len(text):
+        start = text.find("{", idx)
+        if start < 0:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            idx = start + 1
+            continue
+        if isinstance(obj, dict):
+            if _CONTRACT_KEYS <= set(obj):
+                return json.dumps(obj)
+            if fallback is None:
+                fallback = obj
+        idx = max(end, start + 1)
+    if fallback is not None:
+        return json.dumps(fallback)
+    raise ValueError("Model response did not contain a JSON object")

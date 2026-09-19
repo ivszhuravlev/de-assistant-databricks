@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
+from urllib import request
 
 from config import GeneratorConfig
 from pipeline_helpers import load_paths
@@ -86,7 +87,7 @@ class ReadOnlyTools:
             tool("read_contract", "Read the static output contract.", {}),
             tool(
                 "list_raw_files",
-                "List files under the raw taxi landing path.",
+                "List files under this run's raw landing path.",
                 {},
             ),
             tool(
@@ -115,6 +116,12 @@ class ReadOnlyTools:
                     "limit": {"type": "integer"},
                 },
                 ["target", "column"],
+            ),
+            tool(
+                "list_tables",
+                "List Hive tables already written in one logical layer for this run.",
+                {"layer": {"type": "string"}},
+                ["layer"],
             ),
             tool(
                 "peek_table",
@@ -167,6 +174,25 @@ class ReadOnlyTools:
                 },
             ),
             tool(
+                "ask_clarification",
+                "Record a business question that is not in the brief and not observable in data. "
+                "The unattended harness cannot answer. Do not guess; add UNKNOWN: in assumptions.",
+                {"question": {"type": "string"}},
+                ["question"],
+            ),
+            tool(
+                "spark_ui_applications",
+                "Return the live Spark application id on this classic cluster for debugging only; "
+                "do not use it for optimization.",
+                {},
+            ),
+            tool(
+                "spark_ui_failed_jobs",
+                "Return failed or killed Spark jobs with the first error/stage hint for debugging "
+                "only; do not use it for optimization.",
+                {},
+            ),
+            tool(
                 "semantic_search",
                 "Parked. Do not use. Keyword search_previous_errors instead.",
                 {"query": {"type": "string"}},
@@ -192,6 +218,7 @@ class ReadOnlyTools:
                 str(arguments.get("contains") or ""),
                 int(arguments.get("limit") or 20),
             ),
+            "list_tables": lambda: self._list_tables(str(arguments.get("layer") or "")),
             "peek_table": lambda: self._peek_table(
                 str(arguments.get("layer") or ""),
                 str(arguments.get("table") or ""),
@@ -219,6 +246,11 @@ class ReadOnlyTools:
                 int(arguments.get("start_line") or 0),
                 int(arguments.get("num_lines") or 60),
             ),
+            "ask_clarification": lambda: self._ask_clarification(
+                str(arguments.get("question") or "")
+            ),
+            "spark_ui_applications": self._spark_ui_applications,
+            "spark_ui_failed_jobs": self._spark_ui_failed_jobs,
             "semantic_search": lambda: json.dumps(semantic_search(arguments.get("query"))),
         }
         if name not in handlers:
@@ -229,6 +261,125 @@ class ReadOnlyTools:
         if self.spark is None:
             return json.dumps({"error": "spark is required for this tool"})
         return None
+
+    def _spark_ui_applications(self) -> str:
+        missing = self._need_spark()
+        if missing:
+            return missing
+        try:
+            applications = self._live_spark_applications()
+            rows = [
+                {
+                    "application_id": str(application.get("id") or ""),
+                    "name": str(application.get("name") or ""),
+                    "status": "RUNNING",
+                }
+                for application in applications
+            ]
+            return json.dumps({"applications": rows}, sort_keys=True)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+
+    def _spark_ui_failed_jobs(self) -> str:
+        missing = self._need_spark()
+        if missing:
+            return missing
+        try:
+            applications = self._live_spark_applications()
+            jobs = []
+            for application in applications:
+                application_id = str(application.get("id") or "")
+                payload = self._spark_ui_get(f"/applications/{application_id}/jobs")
+                for job in payload if isinstance(payload, list) else []:
+                    status = str(job.get("status") or "").upper()
+                    if status not in {"FAILED", "KILLED"}:
+                        continue
+                    stage_ids = list(job.get("stageIds") or [])
+                    stage_hint = ""
+                    error_snippet = ""
+                    if stage_ids:
+                        stage_hint = f"stage {stage_ids[0]}"
+                        try:
+                            stage = self._spark_ui_get(
+                                f"/applications/{application_id}/stages/{stage_ids[0]}"
+                            )
+                            attempts = stage if isinstance(stage, list) else [stage]
+                            attempt = next(
+                                (
+                                    item
+                                    for item in attempts
+                                    if isinstance(item, dict)
+                                    and str(item.get("status") or "").upper()
+                                    in {"FAILED", "KILLED"}
+                                ),
+                                attempts[0] if attempts else {},
+                            )
+                            if isinstance(attempt, dict):
+                                error_snippet = str(attempt.get("failureReason") or "")
+                                stage_name = str(attempt.get("name") or "")
+                                if stage_name:
+                                    stage_hint = f"{stage_hint}: {stage_name}"
+                        except Exception as exc:
+                            error_snippet = str(exc)
+                    if not error_snippet:
+                        error_snippet = str(
+                            job.get("failureReason")
+                            or job.get("description")
+                            or job.get("name")
+                            or ""
+                        )
+                    jobs.append(
+                        {
+                            "application_id": application_id,
+                            "job_id": job.get("jobId"),
+                            "status": status,
+                            "error_snippet": error_snippet[:500],
+                            "stage_hint": stage_hint[:500],
+                        }
+                    )
+            return json.dumps({"jobs": jobs}, sort_keys=True)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+
+    def _live_spark_applications(self) -> list[dict[str, Any]]:
+        payload = self._spark_ui_get("/applications")
+        if not isinstance(payload, list):
+            raise RuntimeError("Spark UI applications response was not a list")
+        live = []
+        for application in payload:
+            attempts = application.get("attempts") or []
+            if not attempts or any(not attempt.get("completed", False) for attempt in attempts):
+                live.append(application)
+        return live
+
+    def _spark_ui_get(self, path: str) -> Any:
+        relative = "/api/v1" + (path if path.startswith("/") else "/" + path)
+        failures = []
+        for port in (4040, 40001):
+            try:
+                return _read_json_url(f"http://localhost:{port}{relative}")
+            except Exception as exc:
+                failures.append(f"localhost:{port}: {exc}")
+
+        host = _spark_conf(self.spark, "spark.databricks.workspaceUrl")
+        cluster_id = _spark_conf(
+            self.spark, "spark.databricks.clusterUsageTags.clusterId"
+        )
+        org_id = _spark_conf(self.spark, "spark.databricks.clusterUsageTags.orgId")
+        token = _databricks_context_value(self.spark, "apiToken")
+        if host and cluster_id and org_id and token:
+            for port in (4040, 40001):
+                try:
+                    url = (
+                        f"https://{host.removeprefix('https://').rstrip('/')}/driver-proxy-api/o/"
+                        f"{org_id}/{cluster_id}/{port}{relative}"
+                    )
+                    return _read_json_url(url, {"Authorization": f"Bearer {token}"})
+                except Exception as exc:
+                    failures.append(f"driver-proxy:{port}: {exc}")
+        else:
+            failures.append("driver-proxy connection details are unavailable")
+        raise RuntimeError("Spark UI unreachable (" + "; ".join(failures) + ")")
 
     def _read_source(self, source_id: str) -> str:
         if source_id not in self.by_id:
@@ -369,6 +520,36 @@ class ReadOnlyTools:
             },
             sort_keys=True,
             default=str,
+        )
+
+    def _list_tables(self, layer: str) -> str:
+        missing = self._need_spark()
+        if missing:
+            return missing
+        if layer not in _TABLE_LAYERS:
+            return json.dumps({"error": f"Unsupported layer: {layer}"})
+        schema = self.paths.layer_schema(layer)
+        try:
+            rows = self.spark.sql(f"SHOW TABLES IN `{schema}`").collect()
+            tables = [str(row["tableName"]) for row in rows]
+        except Exception as exc:
+            return json.dumps({"error": str(exc), "layer": layer, "schema": schema})
+        return json.dumps({"layer": layer, "schema": schema, "tables": tables}, sort_keys=True)
+
+    def _ask_clarification(self, question: str) -> str:
+        text = (question or "").strip()
+        if not text:
+            return json.dumps({"error": "question is required"})
+        return json.dumps(
+            {
+                "status": "unanswered",
+                "question": text,
+                "instruction": (
+                    "Do not invent this business rule. Add an assumption prefixed "
+                    "with UNKNOWN: and skip implementing it."
+                ),
+            },
+            sort_keys=True,
         )
 
     def _peek_table(self, layer: str, table: str, n: int) -> str:
@@ -599,6 +780,32 @@ def _load_successful_runs(spark, paths, limit: int = 10) -> dict[str, list[dict[
     return result
 
 
+def _read_json_url(url: str, headers: dict[str, str] | None = None) -> Any:
+    http_request = request.Request(url, headers=headers or {})
+    with request.urlopen(http_request, timeout=5) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _spark_conf(spark, key: str) -> str:
+    try:
+        return str(spark.conf.get(key) or "")
+    except Exception:
+        return ""
+
+
+def _databricks_context_value(spark, name: str) -> str:
+    try:
+        context = (
+            spark.sparkContext._jvm.com.databricks.dbutils_v1.DBUtilsHolder.dbutils()
+            .notebook()
+            .getContext()
+        )
+        value = getattr(context, name)()
+        return str(value.get()) if value.isDefined() else ""
+    except Exception:
+        return ""
+
+
 def make_tools(
     config: GeneratorConfig,
     repo_root: Path,
@@ -608,6 +815,7 @@ def make_tools(
         getattr(config, "raw_backend", "adls") or "adls",
         error_root=config.error_log_path,
         output_space=getattr(config, "output_space", "generated") or "generated",
+        pipeline=getattr(config, "pipeline", "taxi") or "taxi",
     )
     loader = None
     run_loader = None

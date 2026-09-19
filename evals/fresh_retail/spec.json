@@ -12,11 +12,11 @@
     "pipeline": "fresh_retail"
   },
   "raw": {
-    "root": "abfss://raw@exampleaccount.dfs.core.windows.net/fresh_reatail_net",
+    "root": "abfss://raw@<adls_account>.dfs.core.windows.net/fresh_reatail_net",
     "note": "Owner folder spelling is fresh_reatail_net.",
     "files": {
-      "train": "abfss://raw@exampleaccount.dfs.core.windows.net/fresh_reatail_net/train.parquet",
-      "eval": "abfss://raw@exampleaccount.dfs.core.windows.net/fresh_reatail_net/eval.parquet"
+      "train": "abfss://raw@<adls_account>.dfs.core.windows.net/fresh_reatail_net/train.parquet",
+      "eval": "abfss://raw@<adls_account>.dfs.core.windows.net/fresh_reatail_net/eval.parquet"
     }
   },
   "identity": ["store_id", "product_id", "sale_date"],
@@ -43,7 +43,7 @@
       {
         "schema": "retail_silver",
         "name": "rejected_sales",
-        "rule": "null store_id, product_id, sale_date, or null/negative sale_amount"
+        "rule": "null store_id, product_id, sale_date, null/negative sale_amount, or duplicate store/product/date/split grain"
       },
       {
         "schema": "retail_silver",
@@ -56,13 +56,15 @@
         "schema": "retail_silver",
         "name": "dim_store",
         "from": ["retail_silver.daily_sales"],
-        "grain": ["store_id"]
+        "grain": ["store_id", "_split"],
+        "attributes": "row from latest sale_date within each store_id and _split"
       },
       {
         "schema": "retail_silver",
         "name": "dim_product",
         "from": ["retail_silver.daily_sales"],
-        "grain": ["product_id"]
+        "grain": ["product_id", "_split"],
+        "attributes": "row from latest sale_date within each product_id and _split"
       }
     ],
     "gold": [
@@ -70,19 +72,19 @@
         "schema": "retail_gold",
         "name": "dim_store",
         "from": ["retail_silver.dim_store"],
-        "unique_grain": ["store_id"]
+        "unique_grain": ["store_id", "_split"]
       },
       {
         "schema": "retail_gold",
         "name": "dim_product",
         "from": ["retail_silver.dim_product"],
-        "unique_grain": ["product_id"]
+        "unique_grain": ["product_id", "_split"]
       },
       {
         "schema": "retail_gold",
         "name": "fct_daily_sales",
         "from": ["retail_silver.daily_sales", "retail_gold.dim_store", "retail_gold.dim_product"],
-        "join": "left join store and product, must not drop rows",
+        "join": "left join store and product on business key plus _split, must not drop rows",
         "unique_grain": ["sales_id"]
       },
       {

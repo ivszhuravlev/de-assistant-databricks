@@ -134,6 +134,82 @@ def _metadata_row_helper_mismatch(tree: ast.AST) -> list[str]:
     return errors
 
 
+def _call_table_arguments(
+    tree: ast.AST,
+    function_name: str,
+    position: int,
+) -> set[str]:
+    """Return comparable AST keys for table arguments passed to a helper."""
+    tables: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _call_name(node.func) != function_name:
+            continue
+        table = node.args[position] if len(node.args) > position else None
+        for keyword in node.keywords:
+            if keyword.arg in {"table", "table_name"}:
+                table = keyword.value
+        if table is not None:
+            tables.add(ast.dump(table, include_attributes=False))
+    return tables
+
+
+def _published_table_metadata_errors(tree: ast.AST) -> list[str]:
+    """Require quality and layer-run rows for every table that is published."""
+    published = _call_table_arguments(tree, "publish_staged", 3)
+    published |= {
+        table
+        for table in _call_table_arguments(tree, "write_delta", 4)
+        if not _is_staging_table(table)
+    }
+    if not published:
+        return []
+
+    quality_tables = _call_table_arguments(tree, "data_quality_row", 2)
+    layer_run_tables = _call_table_arguments(tree, "layer_run_row", 2)
+    errors: list[str] = []
+    if published - quality_tables:
+        errors.append(
+            "each publish_staged table must have a data_quality_row for the same table"
+        )
+    if published - layer_run_tables:
+        errors.append(
+            "each publish_staged table must have a layer_run_row for the same table"
+        )
+    return errors
+
+
+def _is_staging_table(dumped: str) -> bool:
+    return "__staging" in dumped
+
+
+def _direct_write_delta_errors(tree: ast.AST) -> list[str]:
+    """Published tables go through stage_delta + publish_staged, not write_delta."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _call_name(node.func) != "write_delta":
+            continue
+        table = node.args[4] if len(node.args) > 4 else None
+        for keyword in node.keywords:
+            if keyword.arg == "table":
+                table = keyword.value
+        dumped = ast.dump(table, include_attributes=False) if table is not None else ""
+        if table is None or not _is_staging_table(dumped):
+            return [
+                "do not call write_delta for a published table; "
+                "use stage_delta then publish_staged"
+            ]
+    return []
+
+
+def _name_guard_errors(content: str) -> list[str]:
+    if re.search(r"\bif\s+__name__\b", content) or re.search(
+        r"(?<!\.)\b__name__\s*(==|!=)", content
+    ):
+        return [
+            "do not guard transform with __name__; call transform(spark, config) unconditionally"
+        ]
+    return []
+
+
 def _pipeline_run_append_count(tree: ast.AST) -> int:
     """Count calls passing PIPELINE_RUN as append_metadata_rows' table argument."""
     count = 0
@@ -210,6 +286,8 @@ def validate_layer(result: dict[str, Any], expected_layer: str) -> list[str]:
             errors.append(f"{path} does not expose transform")
         if re.search(r"transform\(\s*spark\s*,\s*\{\s*\}\s*\)", content):
             errors.append(f"{path} calls transform(spark, {{}}) and drops config_json")
+        for name_error in _name_guard_errors(content):
+            errors.append(f"{path} {name_error}")
         if re.search(r"(?m)^\s*(import helpers|from helpers import)\b", content):
             errors.append(f"{path} imports a nonexistent helpers module")
         if "load_paths(" in content and "output_space" not in content:
@@ -226,20 +304,31 @@ def validate_layer(result: dict[str, Any], expected_layer: str) -> list[str]:
                 f"{path} must pass output_space=config['output_space'] into load_paths"
             )
         if re.search(
-            r"""spark\.table\(\s*['"](?:gen_)?(?:bronze|silver|gold)\.""",
+            r"""spark\.table\(\s*['"](?:gen_)?(?:tx_|retail_)?(?:bronze|silver|gold)\.""",
             content,
         ):
             errors.append(f"{path} hard-codes a Hive table name; use paths.table")
         if re.search(
-            r"(?i)\b(?:from|join|into)\s+(?:gen_)?(?:bronze|silver|gold)\.",
+            r"(?i)\b(?:from|join|into)\s+(?:gen_)?(?:tx_|retail_)?(?:bronze|silver|gold)\.",
             content,
         ):
-            errors.append(f"{path} hard-codes a Hive schema in SQL; use paths.table")
+            match = re.search(
+                r"(?i)\b(?:from|join|into)\s+(?:gen_)?(?:tx_|retail_)?(?:bronze|silver|gold)\.\w*",
+                content,
+            )
+            snippet = match.group(0) if match else "schema.table"
+            errors.append(
+                f"{path} hard-codes a Hive schema in SQL ({snippet!r}); use paths.table"
+            )
         if re.search(
             r"(?i)\b(?:create|drop|use)\s+(?:database|schema)\s+(?:if\s+(?:not\s+)?exists\s+)?(?:gen_)?(?:bronze|silver|gold)\b",
             content,
         ):
             errors.append(f"{path} hard-codes a Hive database; use ensure_schema(spark, paths)")
+        if expected_layer == "gold" and re.search(r"spark\.sql\s*\(", content):
+            errors.append(
+                f"{path} must not call spark.sql; use spark.table(paths.table(...))"
+            )
         try:
             tree = ast.parse(content)
         except SyntaxError as exc:
@@ -256,6 +345,10 @@ def validate_layer(result: dict[str, Any], expected_layer: str) -> list[str]:
                 )
             for mismatch in _metadata_row_helper_mismatch(tree):
                 errors.append(f"{path} {mismatch}")
+            for metadata_error in _published_table_metadata_errors(tree):
+                errors.append(f"{path} {metadata_error}")
+            for write_error in _direct_write_delta_errors(tree):
+                errors.append(f"{path} {write_error}")
             if expected_layer == "gold" and _pipeline_run_append_count(tree) != 1:
                 errors.append(
                     f"{path} must append exactly one SUCCESS row with "
