@@ -4,9 +4,9 @@ A Databricks job that asks a chat model to write bronze, silver, and gold notebo
 
 This is a harness, not a Databricks App and not a replacement for a data engineer. Tables are Hive external Delta on DBFS. Unity Catalog is not supported. There is no UI and no judge that rewrites a successful run.
 
-Three evals have passed on the operator workspace: NYC taxi (Zoomcamp January 2021), transaction categorization (1M snapshot), and FreshRetailNet daily sales. Generated output lives in `gen_*` (and `gen_tx_*` / `gen_retail_*`). Eval schemas stay untouched.
+Three evals have passed: NYC taxi (Zoomcamp January 2021), transaction categorization (1M snapshot), and FreshRetailNet daily sales. Generated output lives in `gen_*` (and `gen_tx_*` / `gen_retail_*`). Eval schemas stay untouched.
 
-To clone and reproduce you need your own workspace, a classic cluster, ADLS raw files, and a secret-scoped SAS. The public repo does not contain account names, cluster IDs, or tokens.
+To clone and reproduce you need your own workspace, a classic cluster, ADLS raw files, and a secret-scoped SAS. Copy `.env.example` for the variable names. The public repo does not contain account names, cluster IDs, or tokens. MIT license.
 
 ## Layout
 
@@ -22,12 +22,8 @@ docs/                     kernel guide and eval pointers
 ## Configure
 
 ```bash
-export DATABRICKS_CONFIG_PROFILE=<profile>
-export BUNDLE_VAR_existing_cluster_id=<cluster-id>
-export DE_ASSIST_CLUSTER_ID=<cluster-id>
-export DE_ASSIST_WORKSPACE_ROOT=<workspace-root>
-export DE_ASSIST_ADLS_ACCOUNT=<storage-account>
-export DE_ASSIST_ADLS_CONTAINER=<container>
+cp .env.example .env
+# fill DATABRICKS_CONFIG_PROFILE, cluster id, workspace root, ADLS account/container
 cp config/cluster-e2e.json.example config/cluster-e2e.json
 ```
 

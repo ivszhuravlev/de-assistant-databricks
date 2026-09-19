@@ -37,12 +37,12 @@ if dbutils.widgets.get("persist_probe").strip().lower() == "true":
         spark,
         paths,
         error_record(
-            pipeline="error_search_smoke",
+            pipeline="error_search_probe",
             layer="gold",
             table="bronze_taxi_zone_lookup",
             error_type="AnalysisException",
             error="Column LocationID not found. Available columns: [locationid, borough, zone, service_zone]",
-            diagnostics={"source": "search_run_errors_smoke"},
+            diagnostics={"source": "search_run_errors_probe"},
         ),
     )
 hits = search_run_errors(spark, paths, query, limit=limit)

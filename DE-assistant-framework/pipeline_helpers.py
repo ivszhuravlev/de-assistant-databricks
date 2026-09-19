@@ -33,9 +33,9 @@ ADLS_SECRET_KEY = "adls_sas"
 ADLS_LEGACY_SECRET_KEY = "adls-sas"
 DBFS_ROOT = "dbfs:/de-assist-databricks"
 GENERATED_SCHEMA_PREFIX = "gen_"
-# This classic cluster ships with hostile defaults (shuffle 2000, 32 KiB
-# maxPartitionBytes, AQE off, no broadcast). Generated notebooks hang on silver
-# joins unless the session is reset. Eval slices already override shuffle.
+# Classic clusters often ship with hostile defaults (high shuffle, tiny
+# maxPartitionBytes, AQE off). Generated notebooks hang on silver joins unless
+# the session is reset. Eval slices already override shuffle.
 SESSION_SPARK_CONF = {
     "spark.sql.shuffle.partitions": "64",
     "spark.sql.files.maxPartitionBytes": "134217728",

@@ -20,7 +20,7 @@ Account and container come from operator environment (`DE_ASSIST_ADLS_ACCOUNT`, 
 
 1. Container `raw`, directory `taxi_data/`.
 2. Wording "raw + taxi folder": container `raw`, directory `taxi/`.
-3. Screenshot wording `raw_data/taxi`: container `raw_data`, directory `taxi/`.
+3. Container `raw_data`, directory `taxi/`.
 
 **Working assumption:** container `raw`, directory `taxi_data/`. Confirm the container/directory combination before a run. This task must not test the paths or add credentials.
 

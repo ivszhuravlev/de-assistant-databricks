@@ -68,8 +68,8 @@ Every layer runs this bounded loop independently:
 2. Run the model/tool loop and retain its complete message ledger.
 3. Validate the returned JSON and notebook statically.
 4. Write the artifact and, when enabled, execute it as a temporary job.
-5. On failure, capture the concrete validation exception or Databricks task `error` and
-   `error_trace`, write the attempt record and JSON log, and retry.
+5. On failure, capture the slim Spark/SQL error code, write the attempt record and JSON log,
+   and retry.
 6. Append the failure and any matching proven past-fix diff as a new user message to the same
    conversation. The original system message and failed generated answer remain in context.
 7. Return the successful layer, or raise only after `max_attempts` is exhausted.

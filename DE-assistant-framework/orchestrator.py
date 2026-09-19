@@ -29,7 +29,6 @@ from validation import validate_layer, write_artifacts
 _PRIOR_WHITELIST_TOOLS = {"read_tested_pipeline"}
 _PRIOR_SUCCESS_TOOLS = {"list_successful_runs"}
 _PRIOR_HISTORY_TOOLS = {"get_last_error", "read_log", "search_previous_errors"}
-_PRIOR_EVIDENCE_TOOLS = _PRIOR_WHITELIST_TOOLS | _PRIOR_SUCCESS_TOOLS | _PRIOR_HISTORY_TOOLS
 
 
 def run_generator(
@@ -97,9 +96,6 @@ def run_generator(
                     raise ValueError(f"{layer} validation failed: {'; '.join(errors)}")
                 paths = write_artifacts(generated, repo_root / config.output_root)
                 execution = {"status": "SKIPPED"}
-                # The tool loop runs before execute_generated, so this job's Spark UI does not
-                # exist yet. Do not add another LLM round after SUCCESS; a failed job's Spark UI
-                # would support debugging, not optimization, and is outside this task.
                 if config.execute_generated:
                     emit_event(
                         "layer_execute",

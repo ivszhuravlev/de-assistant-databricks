@@ -2,6 +2,7 @@
 .git/**
 HANDOFF.md
 AGENTS.md
+.env
 config/cluster-e2e.json
 .venv
 .venv/**

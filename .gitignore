@@ -6,6 +6,7 @@ __pycache__/
 .tmp/
 *.egg-info/
 .cursor/
+.env
 AGENTS.md
 HANDOFF.md
 config/cluster-e2e.json

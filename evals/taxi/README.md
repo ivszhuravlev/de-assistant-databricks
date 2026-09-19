@@ -15,7 +15,7 @@ databricks bundle run taxi_vertical_slice -t dev
 
 Raw data is already landed under `taxi_data/` in the configured ADLS container.
 
-SAS in secret scope `de-assist-databricks`, keys `adls_sas` or `adls-sas`. Delta / Hive on DBFS.
+Put the ADLS SAS in a Databricks secret scope (`adls_sas` or `adls-sas`). Delta / Hive on DBFS.
 
 ## Hive
 
