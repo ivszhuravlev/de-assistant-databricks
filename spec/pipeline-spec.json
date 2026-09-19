@@ -1,4 +1,0 @@
-{
-  "retired": true,
-  "message": "pipeline-spec.json was a premature implementation cookbook (counts, raw column maps, joins). The generator must read pipeline_brief, not this file."
-}

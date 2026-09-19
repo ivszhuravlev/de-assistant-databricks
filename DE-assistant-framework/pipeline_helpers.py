@@ -78,13 +78,9 @@ class RuntimePaths:
     def table(self, layer: str, table: str | None = None) -> str:
         schema = self.layer_schema(layer) if table is not None else self.schema
         name = table or layer
-        if self.catalog != "hive_metastore":
-            return f"{self.catalog}.{schema}.{name}"
         return f"{schema}.{name}"
 
     def error_table(self) -> str:
-        if self.catalog != "hive_metastore":
-            return f"{self.catalog}.{self.ops_schema}.{RUN_ERRORS}"
         return f"{self.ops_schema}.{RUN_ERRORS}"
 
     def log(self, name: str) -> str:
@@ -174,7 +170,6 @@ def adls_raw_root(pipeline: str = "taxi") -> str:
 def load_paths(
     backend: str = "dbfs",
     *,
-    catalog: str = "hive_metastore",
     schema: str = "nyc_taxi",
     storage_root: str | None = None,
     error_root: str | None = None,
@@ -201,7 +196,7 @@ def load_paths(
     if backend == "adls":
         return RuntimePaths(
             backend="adls",
-            catalog=catalog or "hive_metastore",
+            catalog="hive_metastore",
             schema=schema or "nyc_taxi",
             ops_schema="de_assist",
             raw_root=adls_raw_root(pipeline),
@@ -225,7 +220,7 @@ def load_paths(
         space_delta = f"{root}/delta/generated" if generated else f"{root}/delta"
     return RuntimePaths(
         backend="dbfs",
-        catalog=catalog or "hive_metastore",
+        catalog="hive_metastore",
         schema=schema or "nyc_taxi",
         ops_schema="de_assist",
         raw_root=f"{root}/raw/{cfg['raw_prefix']}",

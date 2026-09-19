@@ -12,8 +12,6 @@ RUN_ERRORS = "run_errors"
 
 
 def metadata_table(paths, name: str) -> str:
-    if paths.catalog != "hive_metastore":
-        return f"{paths.catalog}.{paths.ops_schema}.{name}"
     return f"{paths.ops_schema}.{name}"
 
 
