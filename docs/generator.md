@@ -24,6 +24,12 @@ Start from `config/example.json`. Important fields are:
 For local E2E execution, copy `config/cluster-e2e.json.example` to the ignored
 `config/cluster-e2e.json`, then set `DE_ASSIST_WORKSPACE_ROOT` and `DE_ASSIST_CLUSTER_ID`.
 
+## Storage identity
+
+Raw ADLS is resolved at runtime from `DE_ASSIST_ADLS_ACCOUNT` and `DE_ASSIST_ADLS_CONTAINER`.
+Set both in the process environment (and on the cluster for notebook runs). The kernel
+does not embed an account name. Per-pipeline prefixes live in `EVAL_PIPELINES`.
+
 The prompt has one source of truth: `DE-assistant-framework/prompts.py`. It is the generic
 harness contract. How this pipeline should work comes from `spec/pipeline-brief.md`.
 The operator eval (`evals/*/score.py`, `slice.py`, `spec.json`) is not model input.

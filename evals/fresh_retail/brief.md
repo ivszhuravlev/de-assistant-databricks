@@ -2,7 +2,7 @@
 
 Store and category managers want daily sales from FreshRetailNet. Keep it at day grain — do not explode hourly arrays into the marts.
 
-Raw is already under `fresh_reatail_net` (that spelling is the real folder) on the configured ADLS container: train and eval parquet. Do not re-download from Hugging Face. Read the files for columns.
+Raw is already under the configured fresh retail prefix on the ADLS container: train and eval parquet. Do not re-download from Hugging Face. Read the files for columns.
 
 Downstream already expects these table names (not a recipe for how to build them):
 bronze `daily_sales_train`, `daily_sales_eval`; silver `daily_sales`, `rejected_sales`, `dim_store`, `dim_product`; gold `dim_store`, `dim_product`, `fct_daily_sales`, `fct_store_daily`, `fct_category_daily`.

@@ -10,14 +10,14 @@
     "backend": "adls"
   },
   "raw": {
-    "root": "abfss://raw@exampleaccount.dfs.core.windows.net/taxi_data",
+    "root": "abfss://<container>@<adls_account>.dfs.core.windows.net/taxi_data",
     "already_landed": true,
     "files": {
-      "yellow": "abfss://raw@exampleaccount.dfs.core.windows.net/taxi_data/yellow/yellow_tripdata_2021-01.csv.gz",
-      "green": "abfss://raw@exampleaccount.dfs.core.windows.net/taxi_data/green/green_tripdata_2021-01.csv.gz",
+      "yellow": "abfss://<container>@<adls_account>.dfs.core.windows.net/taxi_data/yellow/yellow_tripdata_2021-01.csv.gz",
+      "green": "abfss://<container>@<adls_account>.dfs.core.windows.net/taxi_data/green/green_tripdata_2021-01.csv.gz",
       "zones": [
-        "abfss://raw@exampleaccount.dfs.core.windows.net/taxi_data/taxi_zone_lookup.csv",
-        "abfss://raw@exampleaccount.dfs.core.windows.net/taxi_data/lookup/taxi_zone_lookup.csv"
+        "abfss://<container>@<adls_account>.dfs.core.windows.net/taxi_data/taxi_zone_lookup.csv",
+        "abfss://<container>@<adls_account>.dfs.core.windows.net/taxi_data/lookup/taxi_zone_lookup.csv"
       ]
     },
     "read_options": {"header": "true", "inferSchema": "true"},

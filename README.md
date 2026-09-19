@@ -22,8 +22,14 @@ export DATABRICKS_CONFIG_PROFILE=<profile>
 export BUNDLE_VAR_existing_cluster_id=<cluster-id>
 export DE_ASSIST_CLUSTER_ID=<cluster-id>
 export DE_ASSIST_WORKSPACE_ROOT=<workspace-root>
+export DE_ASSIST_ADLS_ACCOUNT=<storage-account>
+export DE_ASSIST_ADLS_CONTAINER=<container>
 cp config/cluster-e2e.json.example config/cluster-e2e.json
 ```
+
+## Storage identity
+
+ADLS account and container are not in source. Set `DE_ASSIST_ADLS_ACCOUNT` and `DE_ASSIST_ADLS_CONTAINER` on the operator machine and on the classic cluster (cluster environment variables). Missing either raises `RuntimeError`. Pipeline prefixes stay in `EVAL_PIPELINES`.
 
 Put the ADLS SAS in a Databricks secret scope (`adls_sas` or `adls-sas`), not in git.
 

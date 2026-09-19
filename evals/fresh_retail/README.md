@@ -2,8 +2,6 @@
 
 Hand-built medallion from Hugging Face `Dingdong-Inc/FreshRetailNet-50K`. The generator must not read this package.
 
-Owner raw folder spelling is kept: `fresh_reatail_net`.
-
 ## Run
 
 ```bash
@@ -14,7 +12,7 @@ databricks bundle run load_eval_raw -t dev
 databricks bundle run fresh_retail_vertical_slice -t dev
 ```
 
-Raw: the configured ADLS container under `fresh_reatail_net/` (`train.parquet`, `eval.parquet`). The runtime's existing storage identity is reused.
+Raw: train and eval parquet under the configured fresh retail prefix on the ADLS container.
 
 Taxi `bronze` / `silver` / `gold` stay untouched.
 

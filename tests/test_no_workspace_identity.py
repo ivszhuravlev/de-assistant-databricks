@@ -20,6 +20,7 @@ def test_no_workspace_identity_in_versioned_text():
         "adb-" + "8804925006404308",
         "0724-" + "160225-u7kxvijl",
         "/Workspace" + "/Users/",
+        "dlsprovis" + "qa001",
     )
     findings: list[str] = []
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
@@ -10,13 +11,6 @@ from metadata import RUN_ERRORS
 
 LEGAL_MODES = ("append", "overwrite", "merge")
 LAYER_SCHEMAS = ("bronze", "silver", "gold")
-ADLS_ACCOUNT = "exampleaccount"
-ADLS_CONTAINER = "raw"
-ADLS_RAW_PREFIX = "taxi_data"
-ADLS_RAW_ROOT = (
-    f"abfss://{ADLS_CONTAINER}@{ADLS_ACCOUNT}.dfs.core.windows.net/{ADLS_RAW_PREFIX}"
-)
-# Owner folder spelling for retail is `fresh_reatail_net` (typo kept on purpose).
 EVAL_PIPELINES = {
     "taxi": {
         "raw_prefix": "taxi_data",
@@ -100,19 +94,36 @@ class RuntimePaths:
         return _join(self.checkpoint_root, name)
 
 
+def _required_env(name: str) -> str:
+    value = (os.environ.get(name) or "").strip()
+    if not value:
+        raise RuntimeError(f"{name} is required")
+    return value
+
+
+def adls_account() -> str:
+    return _required_env("DE_ASSIST_ADLS_ACCOUNT")
+
+
+def adls_container() -> str:
+    return _required_env("DE_ASSIST_ADLS_CONTAINER")
+
+
 def configure_adls(spark, sas_token: str) -> str:
     token = (sas_token or "").lstrip("?")
     if not token:
         raise ValueError("ADLS SAS token is empty")
-    dfs = f"{ADLS_ACCOUNT}.dfs.core.windows.net"
-    blob = f"{ADLS_ACCOUNT}.blob.core.windows.net"
+    account = adls_account()
+    container = adls_container()
+    dfs = f"{account}.dfs.core.windows.net"
+    blob = f"{account}.blob.core.windows.net"
     settings = {
         f"fs.azure.account.auth.type.{dfs}": "SAS",
         f"fs.azure.sas.token.provider.type.{dfs}": (
             "org.apache.hadoop.fs.azurebfs.sas.FixedSASTokenProvider"
         ),
         f"fs.azure.sas.fixed.token.{dfs}": token,
-        f"fs.azure.sas.{ADLS_CONTAINER}.{blob}": token,
+        f"fs.azure.sas.{container}.{blob}": token,
         # Directory-scoped SAS tokens cannot authorize ABFS's container-root
         # getAccessControl probe. The account is known to use HNS, so skip it.
         "fs.azure.account.hns.enabled": "true",
@@ -126,7 +137,7 @@ def configure_adls(spark, sas_token: str) -> str:
             hadoop_conf.set(key, value)
     except (AttributeError, TypeError):
         pass
-    return ADLS_RAW_ROOT
+    return adls_raw_root("taxi")
 
 
 def configure_adls_from_secret(spark, dbutils=None, sas_token: str | None = None) -> str:
@@ -157,7 +168,7 @@ def pipeline_config(pipeline: str = "taxi") -> dict[str, str]:
 
 def adls_raw_root(pipeline: str = "taxi") -> str:
     prefix = pipeline_config(pipeline)["raw_prefix"]
-    return f"abfss://{ADLS_CONTAINER}@{ADLS_ACCOUNT}.dfs.core.windows.net/{prefix}"
+    return f"abfss://{adls_container()}@{adls_account()}.dfs.core.windows.net/{prefix}"
 
 
 def load_paths(

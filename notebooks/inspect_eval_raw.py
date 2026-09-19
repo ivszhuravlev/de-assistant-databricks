@@ -20,15 +20,14 @@ from workspace_paths import default_repo_root
 repo_root = Path(default_repo_root(dbutils))
 sys.path.insert(0, str(repo_root / "DE-assistant-framework"))
 
-from pipeline_helpers import configure_adls_from_secret
+from pipeline_helpers import adls_raw_root, configure_adls_from_secret
 
 configure_adls_from_secret(spark, dbutils, sas_token=dbutils.widgets.get("sas").strip() or None)
 
 PREFIXES = {
-    "transaction_cat": "abfss://raw@exampleaccount.dfs.core.windows.net/transaction_cat",
-    "fresh_reatail_net": "abfss://raw@exampleaccount.dfs.core.windows.net/fresh_reatail_net",
-    "fresh_retail_net": "abfss://raw@exampleaccount.dfs.core.windows.net/fresh_retail_net",
-    "taxi_data": "abfss://raw@exampleaccount.dfs.core.windows.net/taxi_data",
+    "taxi": adls_raw_root("taxi"),
+    "transaction_cat": adls_raw_root("transaction_cat"),
+    "fresh_retail": adls_raw_root("fresh_retail"),
 }
 
 

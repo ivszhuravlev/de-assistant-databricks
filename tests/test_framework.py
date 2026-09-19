@@ -344,6 +344,16 @@ def test_read_tested_pipeline_returns_requested_slice(tmp_path: Path):
     assert "SECRET_EVAL" not in json.dumps(hidden)
 
 
+def test_adls_account_env_is_required(monkeypatch):
+    monkeypatch.delenv("DE_ASSIST_ADLS_ACCOUNT", raising=False)
+    try:
+        load_paths("adls")
+    except RuntimeError as exc:
+        assert "DE_ASSIST_ADLS_ACCOUNT is required" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+
 def test_adls_raw_stays_on_account_and_delta_stays_on_dbfs():
     paths = load_paths("adls")
     assert paths.backend == "adls"
@@ -382,7 +392,9 @@ def test_transaction_and_retail_eval_paths_do_not_collide_with_taxi():
     assert gen_tx.table("bronze", "transactions") == "gen_tx_bronze.transactions"
     assert gen_retail.table("gold", "fct_store_daily") == "gen_retail_gold.fct_store_daily"
     assert tx.raw_root.endswith("/transaction_cat")
-    assert retail.raw_root.endswith("/fresh_reatail_net")
+    assert retail.raw_root.startswith("abfss://raw@exampleaccount.dfs.core.windows.net/")
+    assert retail.raw_root != taxi.raw_root
+    assert retail.raw_root != tx.raw_root
     assert tx.delta_root == "dbfs:/de-assist-databricks/delta/tx"
     assert gen_tx.delta_root == "dbfs:/de-assist-databricks/delta/tx/generated"
     assert retail.delta_root == "dbfs:/de-assist-databricks/delta/retail"

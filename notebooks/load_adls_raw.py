@@ -20,7 +20,7 @@ from workspace_paths import default_repo_root
 repo_root = Path(default_repo_root(dbutils))
 sys.path.insert(0, str(repo_root / "DE-assistant-framework"))
 
-from pipeline_helpers import ADLS_RAW_ROOT, configure_adls_from_secret
+from pipeline_helpers import configure_adls_from_secret
 
 sas = dbutils.widgets.get("sas").strip()
 root = configure_adls_from_secret(spark, dbutils, sas_token=sas or None)

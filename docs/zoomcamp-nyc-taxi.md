@@ -25,14 +25,13 @@ Required logical sources:
 3. `taxi_zone_lookup`: one row per TLC location ID.
 4. `payment_type_lookup`: one row per payment-type code; required to reproduce the current chapter 4 `int_trips` enrichment.
 
-The owner supplied account `exampleaccount`, the URL `https://exampleaccount.blob.core.windows.net/raw/taxi_data/`, and the words “raw + taxi folder.” Azure interprets the first path segment as the container, so the URL most strongly indicates:
+Account and container come from operator environment. Azure interprets the first path segment as the container. A typical layout is:
 
 - container: `raw`
 - prefix/folder: `taxi_data/`
-- account: `exampleaccount`
-- equivalent data-lake URI: `abfss://raw@exampleaccount.dfs.core.windows.net/taxi_data/`
+- equivalent data-lake URI: `abfss://<container>@<adls_account>.dfs.core.windows.net/taxi_data/`
 
-**Working assumption:** use container `raw` and prefix `taxi_data/`. The phrase “taxi folder” is ambiguous with `taxi_data`; confirm at Gate 1 whether the actual prefix is `taxi/` or `taxi_data/`. Do not silently rewrite the supplied URL. Authentication and connectivity are outside this specification.
+**Working assumption:** use container `raw` and prefix `taxi_data/`. The phrase “taxi folder” is ambiguous with `taxi_data`; confirm whether the actual prefix is `taxi/` or `taxi_data/`. Authentication and connectivity are outside this specification.
 
 Expected source-map entries should identify concrete paths or glob patterns beneath that prefix. A workable convention, to be confirmed against the actual objects, is:
 

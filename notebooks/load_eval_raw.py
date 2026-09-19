@@ -184,7 +184,7 @@ def copy_dbfs_parquet_dir(src: str, dest: str) -> str:
 
 report = {
     "transaction_cat": {"root": TX_ROOT, "before": list_names(TX_ROOT)},
-    "fresh_reatail_net": {"root": RETAIL_ROOT, "before": list_names(RETAIL_ROOT)},
+    "fresh_retail": {"root": RETAIL_ROOT, "before": list_names(RETAIL_ROOT)},
     "actions": [],
 }
 
@@ -276,7 +276,7 @@ def peek(path: str) -> dict:
     return {"path": path, "columns": df.columns, "count": df.count()}
 
 report["transaction_cat"]["after"] = list_names(TX_ROOT)
-report["fresh_reatail_net"]["after"] = list_names(RETAIL_ROOT)
+report["fresh_retail"]["after"] = list_names(RETAIL_ROOT)
 report["peeks"] = [
     peek(snapshot_tx),
     peek(f"{TX_ROOT}/category_taxonomy.jsonl"),

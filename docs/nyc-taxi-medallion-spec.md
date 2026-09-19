@@ -14,16 +14,13 @@ This file is the business and data contract for the generated workflow. It is no
 
 ### 2.1 Location ambiguity
 
-The storage account is `exampleaccount`. Three descriptions currently conflict:
+Account and container come from operator environment (`DE_ASSIST_ADLS_ACCOUNT`, `DE_ASSIST_ADLS_CONTAINER`). Prefix candidates that have conflicted in the past:
 
-1. Supplied URL: `https://exampleaccount.blob.core.windows.net/raw/taxi_data/`  
-   Interpretation: container `raw`, directory `taxi_data/`.
-2. Owner wording, "raw + taxi folder":  
-   Interpretation: container `raw`, directory `taxi/`.
-3. Screenshot wording, `raw_data/taxi`:  
-   Interpretation: container `raw_data`, directory `taxi/`.
+1. Container `raw`, directory `taxi_data/`.
+2. Wording "raw + taxi folder": container `raw`, directory `taxi/`.
+3. Screenshot wording `raw_data/taxi`: container `raw_data`, directory `taxi/`.
 
-**Gate 1 working assumption:** use the supplied URL literally: container `raw`, directory `taxi_data/`. This is an assumption for generated configuration, not a claim that the path has been verified. Before any run, the owner must confirm the container/directory combination and provide an OAuth-capable Databricks storage configuration. This task must not test the paths or add credentials.
+**Working assumption:** container `raw`, directory `taxi_data/`. Confirm the container/directory combination before a run. This task must not test the paths or add credentials.
 
 The generated pipeline must take physical paths from the source map; paths must not be embedded in transformation code. Changing the selected candidate must be a configuration-only change.
 
@@ -231,12 +228,12 @@ The generator must accept one structured object with the three required top-leve
   "pipeline_id": "nyc_taxi_medallion_v1",
   "prompt": "Generate a Databricks Workflow of PySpark notebooks for raw-to-bronze-to-silver-to-gold NYC TLC yellow and green taxi data. Raw data is already landed. Normalize and union both services, deduplicate using the Zoomcamp trip surrogate key, enrich pickup and dropoff with TLC zones using left joins, and publish a monthly pickup-zone revenue mart. Support bounded monthly backfills, Delta idempotency, the specified DQ gates, and configuration-only source changes.",
   "source_map": {
-    "storage_account": "exampleaccount",
-    "selected_root": "https://exampleaccount.blob.core.windows.net/raw/taxi_data/",
+    "storage_account": "<adls_account>",
+    "selected_root": "https://<adls_account>.blob.core.windows.net/raw/taxi_data/",
     "selected_assumption": "container=raw; directory=taxi_data",
     "unverified_candidates": [
-      "https://exampleaccount.blob.core.windows.net/raw/taxi/",
-      "https://exampleaccount.blob.core.windows.net/raw_data/taxi/"
+      "https://<adls_account>.blob.core.windows.net/raw/taxi/",
+      "https://<adls_account>.blob.core.windows.net/raw_data/taxi/"
     ],
     "authentication": {
       "mode": "oauth",
