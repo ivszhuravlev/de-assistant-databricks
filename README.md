@@ -49,8 +49,10 @@ Eval packages: [`evals/README.md`](evals/README.md). Kernel: [`docs/generator.md
 
 ## What the model sees
 
-The live generate job reads the brief named in the config `source_map`, `spec/helpers-api.txt`, and `spec/tested-pipelines.json`. It can inspect raw files, the `gen_*` tables it has already published, and its own run history: earlier successes, the last error, an attempt log, and a keyword search over failures.
+Reads: the brief from the config `source_map`, `spec/helpers-api.txt`, `spec/tested-pipelines.json`.
 
-It does not get `evals/*`: the package is absent from the source map, the whitelist tool refuses those ids, and a generated notebook that imports or reads `evals/` fails validation before it runs.
+Inspects: raw files, its own `gen_*` tables, its own run history (successes, last error, attempt log, error search).
 
-Layers promoted with `promote_to_whitelist` are readable by later runs as platform patterns, never as domain facts. Per-eval details, including which raw file is the score contract, live in each `evals/*/README.md`.
+Blocked: `evals/*`. Not in the source map, refused by `read_tested_pipeline`, and generated code that imports or reads `evals/` fails validation.
+
+`promote_to_whitelist` adds a passed layer to `spec/tested-pipelines.json`. Per-eval details are in each `evals/*/README.md`.
