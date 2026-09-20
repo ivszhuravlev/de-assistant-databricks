@@ -49,6 +49,8 @@ Eval packages: [`evals/README.md`](evals/README.md). Kernel: [`docs/generator.md
 
 ## What the model sees
 
-The live generate job reads `spec/pipeline-brief.md` (or the matching brief in the config `source_map`) and `spec/helpers-api.txt`. It can inspect raw files and prior `gen_*` tables. It does not get `evals/*/score.py`, `slice.py`, or the hand-built notebooks.
+The live generate job reads the brief named in the config `source_map`, `spec/helpers-api.txt`, and `spec/tested-pipelines.json`. It can inspect raw files, the `gen_*` tables it has already published, and its own run history: earlier successes, the last error, an attempt log, and a keyword search over failures.
 
-For `transaction_cat`, the eval input is `transaction_cat_snapshot.parquet` (1M rows). A separately landed Hugging Face file is not the score contract.
+It does not get `evals/*`: the package is absent from the source map, the whitelist tool refuses those ids, and a generated notebook that imports or reads `evals/` fails validation before it runs.
+
+Layers promoted with `promote_to_whitelist` are readable by later runs as platform patterns, never as domain facts. Per-eval details, including which raw file is the score contract, live in each `evals/*/README.md`.
