@@ -29,10 +29,28 @@ def build_request_body(
     messages: list[dict[str, Any]], tools: list[dict[str, Any]]
 ) -> dict[str, Any]:
     """Build an invocation body with cache markers on stable prompt inputs."""
+    incremental_cache_index = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if messages[index].get("role") in {"user", "tool"}
+        ),
+        None,
+    )
     request_messages = []
-    for message in messages:
+    for index, message in enumerate(messages):
         request_message = dict(message)
         if request_message.get("role") == "system" and isinstance(
+            request_message.get("content"), str
+        ):
+            request_message["content"] = [
+                {
+                    "type": "text",
+                    "text": request_message["content"],
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        elif index == incremental_cache_index and isinstance(
             request_message.get("content"), str
         ):
             request_message["content"] = [

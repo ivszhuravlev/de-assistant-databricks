@@ -1118,7 +1118,7 @@ def test_canceled_execute_is_not_retried(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
-def test_build_request_body_marks_stable_prefix_for_cache():
+def test_build_request_body_marks_system_last_user_and_last_tool_definition():
     from llm_model import build_request_body
 
     messages = [
@@ -1139,12 +1139,74 @@ def test_build_request_body_marks_stable_prefix_for_cache():
             "cache_control": {"type": "ephemeral"},
         }
     ]
-    assert body["messages"][1]["content"] == "changing request"
+    assert body["messages"][1]["content"] == [
+        {
+            "type": "text",
+            "text": "changing request",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
     assert body["tools"][0].get("cache_control") is None
     assert body["tools"][-1]["cache_control"] == {"type": "ephemeral"}
     assert body["tool_choice"] == "auto"
     assert messages[0]["content"] == "stable instructions"
     assert "cache_control" not in tools[-1]
+
+
+def test_build_request_body_marks_only_last_tool_message_for_incremental_cache():
+    from llm_model import build_request_body
+
+    messages = [
+        {"role": "system", "content": "stable instructions"},
+        {"role": "user", "content": "run the checks"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "call-1"}]},
+        {"role": "tool", "tool_call_id": "call-1", "content": "first result"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "call-2"}]},
+        {"role": "tool", "tool_call_id": "call-2", "content": "last result"},
+    ]
+
+    body = build_request_body(messages, [])
+
+    assert body["messages"][3]["content"] == "first result"
+    assert body["messages"][5]["content"] == [
+        {
+            "type": "text",
+            "text": "last result",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+def test_build_request_body_preserves_assistant_tool_calls_and_inputs():
+    from llm_model import build_request_body
+
+    messages = [
+        {"role": "system", "content": "stable instructions"},
+        {"role": "user", "content": "run a tool"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "inspect", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "tool result"},
+    ]
+    tools = [{"type": "function", "function": {"name": "inspect"}}]
+    original_messages = json.loads(json.dumps(messages))
+
+    body = build_request_body(messages, tools)
+
+    assert body["messages"][2] == messages[2]
+    assert messages == original_messages
+    assert all(
+        body["messages"][index] is not messages[index] for index in range(len(messages))
+    )
+    assert json.dumps(body).count('"cache_control"') <= 3
 
 
 def test_usage_from_response_reads_tokens_and_cache():
